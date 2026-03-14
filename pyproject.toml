@@ -1,12 +1,12 @@
 [project]
 name = "nexus"
-version = "0.1.0"
+version = "0.2.0"
 description = "NEXUS - Self-hosted AI agent builder platform"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     # Agent framework
-    "pydantic-ai[groq,anthropic]>=1.68.0",
+    "pydantic-ai[groq,anthropic,mcp]>=1.68.0",
     "pydantic-deep[web-tools]>=0.2.20",
     # API
     "fastapi>=0.115.0",
@@ -14,10 +14,9 @@ dependencies = [
     # Database
     "asyncpg>=0.30.0",
     "pgvector>=0.3.0",
-    # Memory
+    # Memory (Mem0 + local embeddings)
     "mem0ai>=0.1.90",
-    # Embeddings (local, CPU-only)
-    "fastembed>=0.5.0",
+    "sentence-transformers>=3.0.0",
     # Utilities
     "pydantic-settings>=2.7.0",
     "httpx>=0.28.0",

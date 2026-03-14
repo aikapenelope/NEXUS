@@ -10,11 +10,13 @@ from pydantic import BaseModel, Field
 from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_agent
+from app.mcp import call_mcp_tool, list_mcp_tools
+from app.memory import add_memory, get_user_memories, search_memory
 
 app = FastAPI(
     title="NEXUS",
     description="Self-hosted AI agent builder platform",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 
@@ -38,6 +40,10 @@ class RunRequest(BaseModel):
 
     config: AgentConfig
     prompt: str = Field(description="The task or question for the agent")
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID for Mem0 semantic memory integration",
+    )
 
 
 class RunResponse(BaseModel):
@@ -67,20 +73,69 @@ class HealthResponse(BaseModel):
     version: str
 
 
+# ── Memory request / response models ────────────────────────────────
+
+
+class MemoryMessage(BaseModel):
+    """A single message in a conversation."""
+
+    role: str = Field(description="Message role: 'user' or 'assistant'")
+    content: str = Field(description="Message content")
+
+
+class MemoryAddRequest(BaseModel):
+    """Add a conversation to semantic memory."""
+
+    messages: list[MemoryMessage] = Field(
+        description="Conversation messages to extract memories from"
+    )
+    user_id: str = Field(description="User identifier for memory scoping")
+    agent_id: str | None = Field(default=None, description="Optional agent identifier")
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional metadata tags")
+
+
+class MemoryAddResponse(BaseModel):
+    """Result of adding memories."""
+
+    result: dict[str, Any]
+
+
+class MemorySearchRequest(BaseModel):
+    """Search semantic memory."""
+
+    query: str = Field(description="Natural language search query")
+    user_id: str = Field(description="User identifier to scope the search")
+    agent_id: str | None = Field(default=None, description="Optional agent identifier")
+    limit: int = Field(default=5, description="Max results to return")
+
+
+class MemorySearchResponse(BaseModel):
+    """Memory search results."""
+
+    memories: list[dict[str, Any]]
+
+
+class MemoryListResponse(BaseModel):
+    """All memories for a user."""
+
+    memories: list[dict[str, Any]]
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Health check endpoint."""
-    return HealthResponse(status="ok", version="0.1.0")
+    return HealthResponse(status="ok", version="0.2.0")
 
 
 @app.post("/agents/build", response_model=BuildResponse)
 async def build_agent_endpoint(request: BuildRequest) -> BuildResponse:
     """Build an agent from a natural language description.
 
-    Uses Claude Haiku to translate the description into a validated AgentConfig.
+    Uses Claude Haiku to translate the description into a validated
+    AgentConfig.
     """
     try:
         config = await build_agent_from_description(request.description)
@@ -93,11 +148,11 @@ async def build_agent_endpoint(request: BuildRequest) -> BuildResponse:
 async def run_agent_endpoint(request: RunRequest) -> RunResponse:
     """Run an agent with the given config and prompt.
 
-    The agent is instantiated from the config, executed with token/cost limits,
-    and the result is returned with usage metadata.
+    The agent is instantiated from the config, executed with token/cost
+    limits, and the result is returned with usage metadata.
     """
     try:
-        result = await run_agent(request.config, request.prompt)
+        result = await run_agent(request.config, request.prompt, user_id=request.user_id)
         return RunResponse(output=result["output"], usage=result["usage"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}") from e
@@ -115,4 +170,126 @@ async def cerebro_analyze(request: CerebroRequest) -> CerebroResponse:
         result = await run_cerebro(request.query)
         return CerebroResponse(result=result["result"], usage=result["usage"])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cerebro pipeline failed: {e}") from e
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cerebro pipeline failed: {e}",
+        ) from e
+
+
+# ── Memory endpoints ─────────────────────────────────────────────────
+
+
+@app.post("/memory/add", response_model=MemoryAddResponse)
+async def memory_add(request: MemoryAddRequest) -> MemoryAddResponse:
+    """Add a conversation to semantic memory.
+
+    Mem0 extracts facts from the messages and stores them as vector
+    embeddings in pgvector for later retrieval.
+    """
+    try:
+        messages = [m.model_dump() for m in request.messages]
+        result = await add_memory(
+            messages=messages,
+            user_id=request.user_id,
+            agent_id=request.agent_id,
+            metadata=request.metadata,
+        )
+        return MemoryAddResponse(result=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Memory add failed: {e}") from e
+
+
+@app.post("/memory/search", response_model=MemorySearchResponse)
+async def memory_search(
+    request: MemorySearchRequest,
+) -> MemorySearchResponse:
+    """Search semantic memory for relevant facts."""
+    try:
+        memories = await search_memory(
+            query=request.query,
+            user_id=request.user_id,
+            agent_id=request.agent_id,
+            limit=request.limit,
+        )
+        return MemorySearchResponse(memories=memories)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Memory search failed: {e}") from e
+
+
+@app.get("/memory/{user_id}", response_model=MemoryListResponse)
+async def memory_list(
+    user_id: str,
+    agent_id: str | None = None,
+) -> MemoryListResponse:
+    """Get all memories for a user."""
+    try:
+        memories = await get_user_memories(
+            user_id=user_id,
+            agent_id=agent_id,
+        )
+        return MemoryListResponse(memories=memories)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Memory list failed: {e}") from e
+
+
+# ── MCP request / response models ────────────────────────────────────
+
+
+class MCPToolInfo(BaseModel):
+    """Metadata about an MCP tool."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+class MCPToolsResponse(BaseModel):
+    """List of available MCP tools."""
+
+    tools: list[MCPToolInfo]
+
+
+class MCPCallRequest(BaseModel):
+    """Call a specific MCP tool."""
+
+    tool_name: str = Field(description="Name of the MCP tool to call")
+    arguments: dict[str, Any] | None = Field(
+        default=None, description="Arguments to pass to the tool"
+    )
+    server_url: str | None = Field(
+        default=None,
+        description="Optional MCP server URL (defaults to n8n)",
+    )
+
+
+class MCPCallResponse(BaseModel):
+    """Result of an MCP tool call."""
+
+    result: Any
+
+
+# ── MCP endpoints ────────────────────────────────────────────────────
+
+
+@app.get("/mcp/tools", response_model=MCPToolsResponse)
+async def mcp_tools(server_url: str | None = None) -> MCPToolsResponse:
+    """List all tools available from the MCP server (n8n by default)."""
+    try:
+        tools = await list_mcp_tools(server_url)
+        return MCPToolsResponse(tools=[MCPToolInfo(**t) for t in tools])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MCP tool listing failed: {e}") from e
+
+
+@app.post("/mcp/call", response_model=MCPCallResponse)
+async def mcp_call(request: MCPCallRequest) -> MCPCallResponse:
+    """Call a specific tool on the MCP server."""
+    try:
+        result = await call_mcp_tool(
+            tool_name=request.tool_name,
+            arguments=request.arguments,
+            server_url=request.server_url,
+        )
+        return MCPCallResponse(result=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MCP tool call failed: {e}") from e
