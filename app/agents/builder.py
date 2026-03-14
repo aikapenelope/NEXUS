@@ -42,13 +42,22 @@ Always produce a valid AgentConfig. If the user's description is vague,
 make reasonable assumptions and note them in the instructions field.
 """
 
-# The builder agent itself — uses Haiku with structured output
-builder_agent: Agent[None, AgentConfig] = Agent(
-    model=HAIKU_MODEL,
-    output_type=AgentConfig,
-    instructions=BUILDER_INSTRUCTIONS,
-    retries=2,
-)
+# Lazy singleton — created on first use so env vars are available at runtime,
+# not at import time (avoids crashes during Docker build / testing).
+_builder_agent: Agent[None, AgentConfig] | None = None
+
+
+def _get_builder_agent() -> Agent[None, AgentConfig]:
+    """Return the builder agent, creating it on first call."""
+    global _builder_agent  # noqa: PLW0603
+    if _builder_agent is None:
+        _builder_agent = Agent(
+            model=HAIKU_MODEL,
+            output_type=AgentConfig,
+            instructions=BUILDER_INSTRUCTIONS,
+            retries=2,
+        )
+    return _builder_agent
 
 
 async def build_agent_from_description(description: str) -> AgentConfig:
@@ -60,7 +69,8 @@ async def build_agent_from_description(description: str) -> AgentConfig:
     Returns:
         A validated AgentConfig ready to pass to build_agent().
     """
-    result = await builder_agent.run(
+    agent = _get_builder_agent()
+    result = await agent.run(
         description,
         usage_limits=UsageLimits(total_tokens_limit=settings.builder_token_limit),
     )
