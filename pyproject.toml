@@ -1,0 +1,47 @@
+[project]
+name = "nexus"
+version = "0.1.0"
+description = "NEXUS - Self-hosted AI agent builder platform"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    # Agent framework
+    "pydantic-ai[groq,anthropic]>=1.68.0",
+    "pydantic-deep[web-tools]>=0.2.20",
+    # API
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    # Database
+    "asyncpg>=0.30.0",
+    "pgvector>=0.3.0",
+    # Memory
+    "mem0ai>=0.1.90",
+    # Embeddings (local, CPU-only)
+    "fastembed>=0.5.0",
+    # Utilities
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.28.0",
+    "redis>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.390",
+    "ruff>=0.9.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["/pulumi-agent/.venv/lib/python3.13/site-packages"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
