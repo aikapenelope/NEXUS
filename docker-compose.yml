@@ -1,0 +1,140 @@
+# NEXUS AI Agent Platform — Docker Compose Stack
+# Deploy on Hetzner CX43 (8 vCPU, 16GB RAM, 160GB disk)
+#
+# Services:
+#   nexus-api     — FastAPI + Pydantic AI + pydantic-deep
+#   postgres      — PostgreSQL 17 + pgvector (data, mem0, RAG embeddings)
+#   redis         — Redis 7 (caching, queues, agent state)
+#   n8n           — Workflow automation (MCP hub)
+#   langfuse      — LLM observability (self-hosted)
+#   prefect       — Agent scheduling and orchestration
+
+services:
+  # ── NEXUS API ────────────────────────────────────────────────────
+  nexus-api:
+    build: .
+    container_name: nexus-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - NEXUS_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - NEXUS_GROQ_API_KEY=${GROQ_API_KEY}
+      - NEXUS_DATABASE_URL=postgresql://nexus:nexus@postgres:5432/nexus
+      - NEXUS_REDIS_URL=redis://redis:6379/0
+      - NEXUS_DEBUG=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nexus-net
+
+  # ── PostgreSQL + pgvector ────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: nexus-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus
+      POSTGRES_DB: nexus
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexus-net
+
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexus-net
+
+  # ── n8n (workflow automation / MCP hub) ──────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: nexus-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-nexus-n8n}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=nexus
+      - DB_POSTGRESDB_USER=nexus
+      - DB_POSTGRESDB_PASSWORD=nexus
+      - DB_POSTGRESDB_SCHEMA=n8n
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+
+  # ── Langfuse (LLM observability) ────────────────────────────────
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: nexus-langfuse
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://nexus:nexus@postgres:5432/nexus
+      - NEXTAUTH_SECRET=${LANGFUSE_SECRET:-nexus-langfuse-secret}
+      - NEXTAUTH_URL=http://localhost:3000
+      - SALT=${LANGFUSE_SALT:-nexus-langfuse-salt}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+
+  # ── Prefect (agent scheduling) ──────────────────────────────────
+  prefect:
+    image: prefecthq/prefect:3-latest
+    container_name: nexus-prefect
+    restart: unless-stopped
+    ports:
+      - "4200:4200"
+    environment:
+      - PREFECT_SERVER_API_HOST=0.0.0.0
+      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+    command: prefect server start
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+
+volumes:
+  postgres-data:
+  redis-data:
+  n8n-data:
+
+networks:
+  nexus-net:
+    driver: bridge
