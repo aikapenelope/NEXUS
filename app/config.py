@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # ── Model routing ───────────────────────────────────────────────
     # Builder / analysis tasks use Haiku (smarter, paid)
-    haiku_model: str = "anthropic:claude-haiku-4-5-20250315"
+    haiku_model: str = "anthropic:claude-haiku-4-5-20251001"
     # Worker / cheap tasks use Groq (fast, free tier)
     groq_model: str = "groq:llama-3.3-70b-versatile"
 
