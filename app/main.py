@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import logfire
@@ -18,8 +19,12 @@ from app.memory import add_memory, get_user_memories, search_memory
 # Logfire auto-instruments Pydantic AI (agent runs, tool calls, LLM
 # requests) and FastAPI (HTTP requests, latency, errors) in one call.
 # Set LOGFIRE_TOKEN env var to send traces to Logfire Cloud (free tier).
-# If no token is set, Logfire runs in noop mode (no crash, no data sent).
-logfire.configure()
+# If no token is set, tracing is disabled (no crash, no data sent).
+_logfire_token = os.environ.get("LOGFIRE_TOKEN", "")
+if _logfire_token:
+    logfire.configure(token=_logfire_token)
+else:
+    logfire.configure(send_to_logfire=False)
 
 app = FastAPI(
     title="NEXUS",
