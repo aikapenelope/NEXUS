@@ -7,6 +7,7 @@
 #   postgres       — PostgreSQL 17 + pgvector (data, mem0, RAG embeddings)
 #   redis          — Redis 7 (caching, queues, agent state)
 #   n8n            — Workflow automation (MCP hub)
+#   playwright     — Headless browser automation (Playwright MCP server)
 #   prefect        — Agent scheduling and orchestration
 #
 # Observability: Logfire Cloud (free tier, no self-hosted container needed)
@@ -119,6 +120,26 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - nexus-net
+
+  # ── Playwright MCP (browser automation) ─────────────────────────
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.54.0-noble
+    container_name: nexus-playwright
+    restart: unless-stopped
+    ports:
+      - "8931:8931"
+    environment:
+      - HEADLESS=true
+      - MCP_PORT=8931
+    working_dir: /app
+    entrypoint:
+      - sh
+      - -c
+      - |
+        npm install -g @playwright/mcp@latest 2>/dev/null &&
+        npx @playwright/mcp --headless --host 0.0.0.0 --port 8931 --no-sandbox --allowed-hosts '*'
     networks:
       - nexus-net
 

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # Override per-workflow via the API if needed.
     n8n_mcp_url: str = "http://n8n:5678/mcp"
 
+    # ── MCP (Playwright browser automation) ────────────────────────────
+    # Streamable HTTP URL for the Playwright MCP server (headless Chromium).
+    # Agents use this to navigate, click, fill forms, and extract data.
+    playwright_mcp_url: str = "http://playwright:8931/mcp"
+
     # ── Server ──────────────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8000
