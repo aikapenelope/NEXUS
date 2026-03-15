@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # ── Redis ───────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
 
+    # ── Voyage AI (embeddings) ─────────────────────────────────────────
+    voyage_api_key: str = Field(default="", description="Voyage AI API key for embeddings")
+
     # ── MCP (n8n workflow automation) ─────────────────────────────────
     # Default SSE URL for n8n's MCP Server Trigger node.
     # Override per-workflow via the API if needed.

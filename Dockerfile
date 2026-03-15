@@ -3,9 +3,9 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-# Install build tools for native extensions (asyncpg, sentence-transformers, etc.)
+# Install build tools for native extensions (asyncpg, psycopg2, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ libpq-dev && \
+    gcc libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
@@ -16,9 +16,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Runtime deps (libpq for asyncpg, libgomp for onnxruntime/torch)
+# Runtime deps (libpq for asyncpg/psycopg2)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 libgomp1 curl && \
+    libpq5 curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
@@ -27,8 +27,8 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY app/ ./app/
 
-# Health check — give more time for model download on first start
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 EXPOSE 8000

@@ -1,11 +1,11 @@
 """Mem0 semantic memory service for NEXUS.
 
 Level 3 memory: cross-agent, cross-session semantic memory backed by
-PostgreSQL + pgvector for vector storage and HuggingFace local embeddings
-(BAAI/bge-small-en-v1.5, 384 dims, CPU-only via fastembed).
+PostgreSQL + pgvector for vector storage and Voyage AI for embeddings
+(voyage-3-lite, 1024 dims, via OpenAI-compatible API).
 
 Uses Anthropic (Claude Haiku) as the LLM for memory extraction/consolidation.
-No OpenAI dependency.
+No local model downloads -- all inference is via API.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def _get_mem0_config() -> dict[str, Any]:
     """Build the Mem0 configuration dictionary.
 
     - Vector store: pgvector on the same Postgres instance
-    - Embedder: HuggingFace local (fastembed, CPU-only, 384 dims)
+    - Embedder: Voyage AI via OpenAI-compatible provider (API, no local models)
     - LLM: Anthropic Claude Haiku for fact extraction/consolidation
     """
     # Parse DB URL components from settings
@@ -52,14 +52,16 @@ def _get_mem0_config() -> dict[str, Any]:
                 "port": port,
                 "dbname": dbname,
                 "collection_name": "nexus_memories",
-                "embedding_model_dims": 384,
+                "embedding_model_dims": 1024,
             },
         },
         "embedder": {
-            "provider": "huggingface",
+            "provider": "openai",
             "config": {
-                "model": "BAAI/bge-small-en-v1.5",
-                "embedding_dims": 384,
+                "model": "voyage-3-lite",
+                "embedding_dims": 1024,
+                "api_key": settings.voyage_api_key,
+                "openai_base_url": "https://api.voyageai.com/v1",
             },
         },
         "llm": {

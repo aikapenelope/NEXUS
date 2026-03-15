@@ -6,8 +6,9 @@
 #   postgres      — PostgreSQL 17 + pgvector (data, mem0, RAG embeddings)
 #   redis         — Redis 7 (caching, queues, agent state)
 #   n8n           — Workflow automation (MCP hub)
-#   langfuse      — LLM observability (self-hosted)
 #   prefect       — Agent scheduling and orchestration
+#
+# Observability: Logfire Cloud (free tier, no self-hosted container needed)
 
 services:
   # ── NEXUS API ────────────────────────────────────────────────────
@@ -21,12 +22,16 @@ services:
       # Provider SDKs read these directly
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
       # App config (NEXUS_ prefix for pydantic-settings)
       - NEXUS_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - NEXUS_GROQ_API_KEY=${GROQ_API_KEY}
+      - NEXUS_VOYAGE_API_KEY=${VOYAGE_API_KEY}
       - NEXUS_DATABASE_URL=postgresql://nexus:nexus@postgres:5432/nexus
       - NEXUS_REDIS_URL=redis://redis:6379/0
       - NEXUS_DEBUG=false
+      # Logfire observability (optional — noop if not set)
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,8 +51,6 @@ services:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: nexus
       POSTGRES_DB: nexus
-      # Create additional databases for services that need schema isolation
-      POSTGRES_MULTIPLE_DATABASES: langfuse
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d
@@ -96,26 +99,6 @@ services:
       - DB_POSTGRESDB_SCHEMA=n8n
     volumes:
       - n8n-data:/home/node/.n8n
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - nexus-net
-
-  # ── Langfuse (LLM observability) ────────────────────────────────
-  # Pinned to v2 — v3 requires ClickHouse + Redis + S3 (too heavy for CX43).
-  # v2 only needs Postgres, which we already have.
-  langfuse:
-    image: langfuse/langfuse:2
-    container_name: nexus-langfuse
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_URL=postgresql://nexus:nexus@postgres:5432/langfuse
-      - NEXTAUTH_SECRET=${LANGFUSE_SECRET:-nexus-langfuse-secret}
-      - NEXTAUTH_URL=http://localhost:3000
-      - SALT=${LANGFUSE_SALT:-nexus-langfuse-salt}
     depends_on:
       postgres:
         condition: service_healthy
