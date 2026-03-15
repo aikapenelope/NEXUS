@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
+import logfire
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -13,11 +15,23 @@ from app.agents.factory import AgentConfig, run_agent
 from app.mcp import call_mcp_tool, list_mcp_tools
 from app.memory import add_memory, get_user_memories, search_memory
 
+# ── Observability ────────────────────────────────────────────────────
+# Logfire auto-instruments Pydantic AI (agent runs, tool calls, LLM
+# requests) and FastAPI (HTTP requests, latency, errors) in one call.
+# Set LOGFIRE_TOKEN env var to send traces to Logfire Cloud (free tier).
+# If no token is set, tracing is disabled (no crash, no data sent).
+_logfire_token = os.environ.get("LOGFIRE_TOKEN", "")
+if _logfire_token:
+    logfire.configure(token=_logfire_token)
+else:
+    logfire.configure(send_to_logfire=False)
+
 app = FastAPI(
     title="NEXUS",
     description="Self-hosted AI agent builder platform",
-    version="0.2.0",
+    version="0.3.0",
 )
+logfire.instrument_fastapi(app)
 
 
 # ── Request / Response models ────────────────────────────────────────
@@ -127,7 +141,7 @@ class MemoryListResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Health check endpoint."""
-    return HealthResponse(status="ok", version="0.2.0")
+    return HealthResponse(status="ok", version="0.3.0")
 
 
 @app.post("/agents/build", response_model=BuildResponse)

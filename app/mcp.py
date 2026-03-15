@@ -44,6 +44,9 @@ async def list_mcp_tools(
     Connects to the MCP server, discovers available tools, and returns
     their metadata (name, description, input schema).
 
+    Returns an empty list if the MCP server is unreachable (e.g. n8n
+    has no MCP Server Trigger workflow configured yet).
+
     Args:
         server_url: SSE URL of the MCP server. Defaults to n8n.
 
@@ -51,16 +54,21 @@ async def list_mcp_tools(
         List of tool metadata dicts with name, description, and schema.
     """
     server = get_n8n_mcp_server(server_url)
-    async with server:
-        tools = await server.list_tools()
-        return [
-            {
-                "name": t.name,
-                "description": t.description or "",
-                "input_schema": (t.inputSchema if hasattr(t, "inputSchema") else {}),
-            }
-            for t in tools
-        ]
+    try:
+        async with server:
+            tools = await server.list_tools()
+            return [
+                {
+                    "name": t.name,
+                    "description": t.description or "",
+                    "input_schema": (t.inputSchema if hasattr(t, "inputSchema") else {}),
+                }
+                for t in tools
+            ]
+    except Exception:
+        # MCP server not available -- n8n may not have an MCP Server
+        # Trigger workflow configured. Return empty list gracefully.
+        return []
 
 
 async def call_mcp_tool(
@@ -77,8 +85,18 @@ async def call_mcp_tool(
 
     Returns:
         The tool's response.
+
+    Raises:
+        ConnectionError: If the MCP server is unreachable.
     """
     server = get_n8n_mcp_server(server_url)
-    async with server:
-        result = await server.direct_call_tool(tool_name, arguments or {})
-        return result
+    try:
+        async with server:
+            result = await server.direct_call_tool(tool_name, arguments or {})
+            return result
+    except Exception as e:
+        msg = (
+            f"MCP server unreachable: {e}. "
+            "Ensure n8n has a workflow with an MCP Server Trigger node active."
+        )
+        raise ConnectionError(msg) from e
