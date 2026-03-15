@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.ag_ui import AGUIApp, StateDeps
 
 from app.agents.builder import build_agent_from_description
@@ -82,7 +82,7 @@ copilot_agent = Agent(
 
 
 @copilot_agent.tool
-async def build_agent(ctx: Any, description: str) -> str:
+async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) -> str:
     """Build an AI agent from a natural language description.
 
     Args:
@@ -125,7 +125,9 @@ async def build_agent(ctx: Any, description: str) -> str:
 
 
 @copilot_agent.tool
-async def run_agent_tool(ctx: Any, prompt: str, user_id: str = "copilot-user") -> str:
+async def run_agent_tool(
+    ctx: RunContext[StateDeps[NexusState]], prompt: str, user_id: str = "copilot-user"
+) -> str:
     """Run the last built agent with a specific task.
 
     Args:
@@ -145,7 +147,7 @@ async def run_agent_tool(ctx: Any, prompt: str, user_id: str = "copilot-user") -
 
 
 @copilot_agent.tool
-async def run_cerebro_tool(ctx: Any, query: str) -> str:
+async def run_cerebro_tool(ctx: RunContext[StateDeps[NexusState]], query: str) -> str:
     """Run the Cerebro multi-agent analysis pipeline on a topic.
 
     Args:
@@ -175,7 +177,9 @@ async def run_cerebro_tool(ctx: Any, query: str) -> str:
 
 
 @copilot_agent.tool
-async def memory_search_tool(ctx: Any, query: str, user_id: str = "copilot-user") -> str:
+async def memory_search_tool(
+    ctx: RunContext[StateDeps[NexusState]], query: str, user_id: str = "copilot-user"
+) -> str:
     """Search semantic memory for relevant information.
 
     Args:
@@ -205,7 +209,9 @@ async def memory_search_tool(ctx: Any, query: str, user_id: str = "copilot-user"
 
 
 @copilot_agent.tool
-async def memory_add_tool(ctx: Any, content: str, user_id: str = "copilot-user") -> str:
+async def memory_add_tool(
+    ctx: RunContext[StateDeps[NexusState]], content: str, user_id: str = "copilot-user"
+) -> str:
     """Add information to semantic memory.
 
     Args:
@@ -221,7 +227,7 @@ async def memory_add_tool(ctx: Any, content: str, user_id: str = "copilot-user")
 
 
 @copilot_agent.tool
-async def list_mcp_tools_tool(ctx: Any) -> str:
+async def list_mcp_tools_tool(ctx: RunContext[StateDeps[NexusState]]) -> str:
     """List all available MCP tools from the n8n server."""
     tools: list[dict[str, Any]] = await list_mcp_tools()
     if not tools:
