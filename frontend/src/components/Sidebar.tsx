@@ -1,6 +1,7 @@
 "use client";
 
-import { Bot, Brain, Database, Wrench, MessageSquare } from "lucide-react";
+import Link from "next/link";
+import { Bot, Brain, Database, Wrench, MessageSquare, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SidebarProps {
@@ -23,7 +24,7 @@ export function Sidebar({ activePanel }: SidebarProps) {
           <Bot className="w-4 h-4 text-emerald-400" />
         </div>
       </div>
-      <nav className="flex flex-col gap-2">
+      <nav className="flex flex-col gap-2 flex-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           return (
@@ -42,6 +43,17 @@ export function Sidebar({ activePanel }: SidebarProps) {
           );
         })}
       </nav>
+
+      {/* Dashboard link at bottom */}
+      <div className="mt-auto pt-4 border-t border-zinc-800">
+        <Link
+          href="/dashboard"
+          title="Dashboard"
+          className="w-10 h-10 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+        >
+          <BarChart3 className="w-5 h-5" />
+        </Link>
+      </div>
     </aside>
   );
 }
