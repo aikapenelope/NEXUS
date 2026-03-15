@@ -2,10 +2,10 @@
 
 Level 3 memory: cross-agent, cross-session semantic memory backed by
 PostgreSQL + pgvector for vector storage and Voyage AI for embeddings
-(voyage-3-lite, 1024 dims, via OpenAI-compatible API).
+(voyage-3-lite, 512 dims, via OpenAI-compatible API).
 
-Uses Anthropic (Claude Haiku) as the LLM for memory extraction/consolidation.
-No local model downloads -- all inference is via API.
+Uses Groq (Llama 3.3 70B) as the LLM for memory extraction/consolidation.
+Free tier, no local model downloads -- all inference is via API.
 """
 
 from __future__ import annotations
@@ -13,8 +13,36 @@ from __future__ import annotations
 from typing import Any
 
 from mem0 import Memory
+from mem0.embeddings.openai import OpenAIEmbedding
 
 from app.config import settings
+
+
+def _patched_embed(
+    self: OpenAIEmbedding,
+    text: str,
+    memory_action: str | None = None,
+) -> list[float]:
+    """Patched embed that skips ``dimensions`` for non-OpenAI backends.
+
+    Mem0's ``OpenAIEmbedding.__init__`` forces ``embedding_dims = 1536``
+    when the user doesn't set it, then ``embed()`` always passes
+    ``dimensions`` to the API.  Providers like Voyage AI reject that
+    parameter (Mem0 issue #4153).  This patch omits ``dimensions``
+    whenever the client points at a non-OpenAI base URL.
+    """
+    text = text.replace("\n", " ")
+    kwargs: dict[str, Any] = {"input": [text], "model": self.config.model}
+    # Only send `dimensions` when talking to the real OpenAI API.
+    base = getattr(self.config, "openai_base_url", "") or ""
+    is_openai_native = not base or "api.openai.com" in base
+    if is_openai_native and self.config.embedding_dims is not None:
+        kwargs["dimensions"] = self.config.embedding_dims
+    return self.client.embeddings.create(**kwargs).data[0].embedding
+
+
+# Apply monkey-patch before any Memory instance is created.
+OpenAIEmbedding.embed = _patched_embed  # type: ignore[assignment]
 
 # Lazy singleton — created on first use so env vars and DB are ready.
 _memory: Memory | None = None
@@ -25,7 +53,7 @@ def _get_mem0_config() -> dict[str, Any]:
 
     - Vector store: pgvector on the same Postgres instance
     - Embedder: Voyage AI via OpenAI-compatible provider (API, no local models)
-    - LLM: Anthropic Claude Haiku for fact extraction/consolidation
+    - LLM: Groq Llama 3.3 70B for fact extraction/consolidation (free tier)
     """
     # Parse DB URL components from settings
     # Format: postgresql://user:pass@host:port/dbname
@@ -52,23 +80,29 @@ def _get_mem0_config() -> dict[str, Any]:
                 "port": port,
                 "dbname": dbname,
                 "collection_name": "nexus_memories",
-                "embedding_model_dims": 1024,
+                "embedding_model_dims": 512,
             },
         },
         "embedder": {
             "provider": "openai",
             "config": {
                 "model": "voyage-3-lite",
-                "embedding_dims": 1024,
+                # NOTE: Do NOT set embedding_dims here. Mem0's OpenAI embedder
+                # always passes `dimensions` to the API, but Voyage AI doesn't
+                # support it (known Mem0 issue #4153). voyage-3-lite natively
+                # returns 512-dim vectors, matching our pgvector collection.
                 "api_key": settings.voyage_api_key,
                 "openai_base_url": "https://api.voyageai.com/v1",
             },
         },
         "llm": {
-            "provider": "anthropic",
+            "provider": "groq",
             "config": {
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 1500,
+                "model": "llama-3.3-70b-versatile",
+                "api_key": settings.groq_api_key,
+                "max_tokens": 500,
+                "temperature": 0.1,
+                "top_p": 0.1,
             },
         },
     }
