@@ -1,12 +1,12 @@
 [project]
 name = "nexus"
-version = "0.3.0"
+version = "0.4.0"
 description = "NEXUS - Self-hosted AI agent builder platform"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     # Agent framework
-    "pydantic-ai[groq,anthropic,mcp,logfire]>=1.68.0",
+    "pydantic-ai[groq,anthropic,mcp,logfire,ag-ui]>=1.68.0",
     "pydantic-deep[web-tools]>=0.2.20",
     # API
     "fastapi>=0.115.0",

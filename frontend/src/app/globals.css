@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/* ── OpenAI-style dark theme ─────────────────────────────────────── */
+
+:root {
+  --background: #09090b;
+  --foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --border: #27272a;
+  --accent: #3f3f46;
+  --accent-foreground: #fafafa;
+  --primary: #10b981;
+  --primary-foreground: #09090b;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* ── CopilotKit chat overrides ───────────────────────────────────── */
+
+.copilotKitChat {
+  --copilot-kit-background-color: #09090b;
+  --copilot-kit-secondary-color: #18181b;
+  --copilot-kit-primary-color: #10b981;
+  --copilot-kit-contrast-color: #fafafa;
+  --copilot-kit-secondary-contrast-color: #a1a1aa;
+  --copilot-kit-separator-color: #27272a;
+  --copilot-kit-response-button-background-color: #27272a;
+  --copilot-kit-response-button-color: #fafafa;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+}

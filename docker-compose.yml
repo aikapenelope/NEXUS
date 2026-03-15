@@ -2,11 +2,12 @@
 # Deploy on Hetzner CX43 (8 vCPU, 16GB RAM, 160GB disk)
 #
 # Services:
-#   nexus-api     — FastAPI + Pydantic AI + pydantic-deep
-#   postgres      — PostgreSQL 17 + pgvector (data, mem0, RAG embeddings)
-#   redis         — Redis 7 (caching, queues, agent state)
-#   n8n           — Workflow automation (MCP hub)
-#   prefect       — Agent scheduling and orchestration
+#   nexus-api      — FastAPI + Pydantic AI + AG-UI copilot endpoint
+#   nexus-frontend — Next.js 15 + CopilotKit (OpenAI-style dark UI)
+#   postgres       — PostgreSQL 17 + pgvector (data, mem0, RAG embeddings)
+#   redis          — Redis 7 (caching, queues, agent state)
+#   n8n            — Workflow automation (MCP hub)
+#   prefect        — Agent scheduling and orchestration
 #
 # Observability: Logfire Cloud (free tier, no self-hosted container needed)
 
@@ -37,6 +38,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - nexus-net
+
+  # ── NEXUS Frontend ───────────────────────────────────────────────
+  nexus-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nexus-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_COPILOT_API_URL=/api/copilotkit
+    depends_on:
+      - nexus-api
     networks:
       - nexus-net
 
