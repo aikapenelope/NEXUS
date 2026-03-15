@@ -7,11 +7,13 @@ from typing import Any
 
 import logfire
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_agent
+from app.copilot import copilot_app
 from app.mcp import call_mcp_tool, list_mcp_tools
 from app.memory import add_memory, get_user_memories, search_memory
 
@@ -29,9 +31,24 @@ else:
 app = FastAPI(
     title="NEXUS",
     description="Self-hosted AI agent builder platform",
-    version="0.3.0",
+    version="0.4.0",
 )
 logfire.instrument_fastapi(app)
+
+# ── CORS ─────────────────────────────────────────────────────────────
+# Allow the Next.js frontend (nexus-frontend container or localhost dev)
+# to call the API. In production, restrict origins to the actual domain.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── AG-UI Copilot endpoint ───────────────────────────────────────────
+# Mount the AG-UI app at /api/copilot for CopilotKit frontend integration.
+app.mount("/api/copilot", copilot_app)
 
 
 # ── Request / Response models ────────────────────────────────────────
@@ -141,7 +158,7 @@ class MemoryListResponse(BaseModel):
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Health check endpoint."""
-    return HealthResponse(status="ok", version="0.3.0")
+    return HealthResponse(status="ok", version="0.4.0")
 
 
 @app.post("/agents/build", response_model=BuildResponse)
