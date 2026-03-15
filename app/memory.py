@@ -68,7 +68,6 @@ def _get_mem0_config() -> dict[str, Any]:
             "provider": "anthropic",
             "config": {
                 "model": "claude-haiku-4-5-20251001",
-                "temperature": 0.1,
                 "max_tokens": 1500,
             },
         },
