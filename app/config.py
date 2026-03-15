@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # ── Redis ───────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
 
+    # ── MCP (n8n workflow automation) ─────────────────────────────────
+    # Default SSE URL for n8n's MCP Server Trigger node.
+    # Override per-workflow via the API if needed.
+    n8n_mcp_url: str = "http://n8n:5678/mcp"
+
     # ── Server ──────────────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8000

@@ -87,8 +87,16 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
     return agent
 
 
-async def run_agent(config: AgentConfig, prompt: str) -> dict[str, Any]:
+async def run_agent(
+    config: AgentConfig,
+    prompt: str,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     """Build an agent from config, run it with the given prompt, return results.
+
+    If user_id is provided, Mem0 semantic memory is searched for relevant
+    context and injected into the prompt. After the run, the conversation
+    is saved back to Mem0 for future recall.
 
     Returns a dict with the agent output and usage metadata.
     """
@@ -103,11 +111,48 @@ async def run_agent(config: AgentConfig, prompt: str) -> dict[str, Any]:
         else:
             token_limit = settings.worker_token_limit
 
+    # Inject Mem0 semantic memory context if user_id is provided
+    enriched_prompt = prompt
+    if user_id:
+        try:
+            from app.memory import add_memory, search_memory
+
+            memories = await search_memory(query=prompt, user_id=user_id, agent_id=config.name)
+            if memories:
+                memory_lines = [
+                    m.get("memory", m.get("text", ""))
+                    for m in memories
+                    if m.get("memory") or m.get("text")
+                ]
+                if memory_lines:
+                    context = "\n".join(f"- {line}" for line in memory_lines)
+                    enriched_prompt = (
+                        f"Relevant memories about this user:\n{context}\n\n---\n\n{prompt}"
+                    )
+        except Exception:
+            pass  # Memory is best-effort, don't block agent execution
+
     result = await agent.run(
-        prompt,
+        enriched_prompt,
         deps=deps,
         usage_limits=UsageLimits(total_tokens_limit=token_limit),
     )
+
+    # Save conversation to Mem0 for future recall
+    if user_id:
+        try:
+            from app.memory import add_memory
+
+            await add_memory(
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": result.output},
+                ],
+                user_id=user_id,
+                agent_id=config.name,
+            )
+        except Exception:
+            pass  # Memory save is best-effort
 
     return {
         "output": result.output,
