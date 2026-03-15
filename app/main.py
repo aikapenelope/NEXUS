@@ -15,7 +15,7 @@ from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_agent
 from app.copilot import copilot_app
-from app.mcp import call_mcp_tool, list_mcp_tools
+from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
 from app.registry import (
     agent_config_from_record,
@@ -493,9 +493,13 @@ class MCPCallRequest(BaseModel):
     arguments: dict[str, Any] | None = Field(
         default=None, description="Arguments to pass to the tool"
     )
+    server_name: str | None = Field(
+        default=None,
+        description="Registered server name: 'n8n', 'playwright' (defaults to n8n)",
+    )
     server_url: str | None = Field(
         default=None,
-        description="Optional MCP server URL (defaults to n8n)",
+        description="Optional MCP server URL override",
     )
 
 
@@ -508,11 +512,31 @@ class MCPCallResponse(BaseModel):
 # ── MCP endpoints ────────────────────────────────────────────────────
 
 
+class MCPServersResponse(BaseModel):
+    """List of registered MCP servers."""
+
+    servers: dict[str, str]
+
+
+@app.get("/mcp/servers", response_model=MCPServersResponse)
+async def mcp_servers() -> MCPServersResponse:
+    """List all registered MCP servers and their URLs."""
+    return MCPServersResponse(servers=list_registered_servers())
+
+
 @app.get("/mcp/tools", response_model=MCPToolsResponse)
-async def mcp_tools(server_url: str | None = None) -> MCPToolsResponse:
-    """List all tools available from the MCP server (n8n by default)."""
+async def mcp_tools(
+    server_name: str | None = None,
+    server_url: str | None = None,
+) -> MCPToolsResponse:
+    """List all tools available from an MCP server.
+
+    Query params:
+        server_name: Registered server ("n8n", "playwright"). Defaults to n8n.
+        server_url: Direct SSE URL override.
+    """
     try:
-        tools = await list_mcp_tools(server_url)
+        tools = await list_mcp_tools(server_url=server_url, server_name=server_name)
         return MCPToolsResponse(tools=[MCPToolInfo(**t) for t in tools])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MCP tool listing failed: {e}") from e
@@ -520,11 +544,12 @@ async def mcp_tools(server_url: str | None = None) -> MCPToolsResponse:
 
 @app.post("/mcp/call", response_model=MCPCallResponse)
 async def mcp_call(request: MCPCallRequest) -> MCPCallResponse:
-    """Call a specific tool on the MCP server."""
+    """Call a specific tool on an MCP server."""
     try:
         result = await call_mcp_tool(
             tool_name=request.tool_name,
             arguments=request.arguments,
+            server_name=request.server_name,
             server_url=request.server_url,
         )
         return MCPCallResponse(result=result)

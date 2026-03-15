@@ -15,7 +15,7 @@ from pydantic_ai.ag_ui import AGUIApp, StateDeps
 from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_agent
-from app.mcp import list_mcp_tools
+from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, search_memory
 from app.registry import save_agent
 
@@ -75,9 +75,12 @@ copilot_agent = Agent(
         "2. Run agents with specific tasks\n"
         "3. Run Cerebro multi-agent analysis pipelines\n"
         "4. Search and manage semantic memory\n"
-        "5. List available MCP tools\n\n"
+        "5. List available MCP tools from connected servers\n"
+        "6. Browse the web using a headless browser (navigate, click, extract)\n\n"
         "Be concise and helpful. When building agents, confirm the config "
-        "before running. When running Cerebro, explain each stage."
+        "before running. When running Cerebro, explain each stage. "
+        "When browsing the web, use the browse_web tool to navigate to URLs "
+        "and extract content from pages."
     ),
 )
 
@@ -235,14 +238,127 @@ async def memory_add_tool(
 
 
 @copilot_agent.tool
-async def list_mcp_tools_tool(ctx: RunContext[StateDeps[NexusState]]) -> str:
-    """List all available MCP tools from the n8n server."""
-    tools: list[dict[str, Any]] = await list_mcp_tools()
-    if not tools:
-        return "No MCP tools available (n8n server may be unreachable)."
+async def list_mcp_tools_tool(
+    ctx: RunContext[StateDeps[NexusState]], server_name: str = ""
+) -> str:
+    """List available MCP tools from connected servers.
 
-    tool_lines = [f"- {t['name']}: {t['description']}" for t in tools]
-    return f"Available MCP tools ({len(tools)}):\n" + "\n".join(tool_lines)
+    Args:
+        server_name: Server to query ("n8n", "playwright", or empty for all).
+    """
+    if server_name:
+        tools: list[dict[str, Any]] = await list_mcp_tools(server_name=server_name)
+        if not tools:
+            return f"No tools available from '{server_name}' (server may be unreachable)."
+        tool_lines = [f"- {t['name']}: {t['description']}" for t in tools]
+        return f"MCP tools from '{server_name}' ({len(tools)}):\n" + "\n".join(tool_lines)
+
+    # List all servers and their tools
+    servers = list_registered_servers()
+    parts: list[str] = []
+    for name in servers:
+        tools = await list_mcp_tools(server_name=name)
+        if tools:
+            tool_lines = [f"  - {t['name']}: {t['description']}" for t in tools]
+            parts.append(f"**{name}** ({len(tools)} tools):\n" + "\n".join(tool_lines))
+        else:
+            parts.append(f"**{name}**: unavailable or no tools")
+    return "Connected MCP servers:\n\n" + "\n\n".join(parts)
+
+
+@copilot_agent.tool
+async def browse_web(
+    ctx: RunContext[StateDeps[NexusState]],
+    url: str,
+    action: str = "snapshot",
+) -> str:
+    """Browse a web page using the headless browser.
+
+    Navigates to the URL and performs the requested action. Uses the
+    Playwright MCP server for browser automation.
+
+    Args:
+        url: The URL to navigate to.
+        action: What to do on the page. Options:
+            "snapshot" - Get the page accessibility tree (default, best for reading)
+            "screenshot" - Take a screenshot of the page
+            "content" - Get the full page HTML content
+    """
+    try:
+        # Navigate to the URL
+        await call_mcp_tool(
+            tool_name="browser_navigate",
+            arguments={"url": url},
+            server_name="playwright",
+        )
+
+        # Perform the requested action
+        if action == "screenshot":
+            result = await call_mcp_tool(
+                tool_name="browser_screenshot",
+                arguments={},
+                server_name="playwright",
+            )
+            return f"Screenshot taken of {url}. Result: {str(result)[:500]}"
+
+        # Default: get accessibility snapshot (structured text)
+        result = await call_mcp_tool(
+            tool_name="browser_snapshot",
+            arguments={},
+            server_name="playwright",
+        )
+        # Truncate to avoid overwhelming the LLM context
+        text = str(result)
+        if len(text) > 3000:
+            text = text[:3000] + "\n... (truncated)"
+        return f"Page content from {url}:\n\n{text}"
+
+    except ConnectionError as e:
+        return (
+            f"Browser unavailable: {e}. "
+            "The Playwright MCP server may not be running."
+        )
+    except Exception as e:
+        return f"Browser error: {e}"
+
+
+@copilot_agent.tool
+async def browser_action(
+    ctx: RunContext[StateDeps[NexusState]],
+    tool_name: str,
+    arguments: str = "{}",
+) -> str:
+    """Call any Playwright browser tool directly.
+
+    For advanced browser interactions beyond navigate/snapshot. Use
+    list_mcp_tools_tool with server_name="playwright" to see all
+    available tools.
+
+    Args:
+        tool_name: The Playwright MCP tool name (e.g., "browser_click").
+        arguments: JSON string of arguments for the tool.
+    """
+    import json
+
+    try:
+        args = json.loads(arguments) if arguments else {}
+    except json.JSONDecodeError:
+        return f"Invalid JSON arguments: {arguments}"
+
+    try:
+        result = await call_mcp_tool(
+            tool_name=tool_name,
+            arguments=args,
+            server_name="playwright",
+        )
+        text = str(result)
+        if len(text) > 3000:
+            text = text[:3000] + "\n... (truncated)"
+        return f"Browser tool '{tool_name}' result:\n{text}"
+    except ConnectionError as e:
+        return f"Browser unavailable: {e}"
+    except Exception as e:
+        return f"Browser tool error: {e}"
 
 
 # ── AG-UI app instance ───────────────────────────────────────────────
