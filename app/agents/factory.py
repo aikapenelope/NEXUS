@@ -115,7 +115,7 @@ async def run_agent(
     enriched_prompt = prompt
     if user_id:
         try:
-            from app.memory import add_memory, search_memory
+            from app.memory import search_memory
 
             memories = await search_memory(query=prompt, user_id=user_id, agent_id=config.name)
             if memories:
@@ -138,21 +138,9 @@ async def run_agent(
         usage_limits=UsageLimits(total_tokens_limit=token_limit),
     )
 
-    # Save conversation to Mem0 for future recall
-    if user_id:
-        try:
-            from app.memory import add_memory
-
-            await add_memory(
-                messages=[
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": result.output},
-                ],
-                user_id=user_id,
-                agent_id=config.name,
-            )
-        except Exception:
-            pass  # Memory save is best-effort
+    # NOTE: Memory save removed here to avoid double writes.
+    # The copilot's memory_add_tool handles saves when the LLM decides
+    # to remember something, giving it control over what gets stored.
 
     return {
         "output": result.output,
