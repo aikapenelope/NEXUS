@@ -17,6 +17,7 @@ from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_agent
 from app.mcp import list_mcp_tools
 from app.memory import add_memory, search_memory
+from app.registry import save_agent
 
 # ── Shared state (synced to frontend via AG-UI) ─────────────────────
 
@@ -111,6 +112,10 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
     if config.include_web:
         enabled_tools.append("web")
 
+    # Auto-save to registry
+    record = await save_agent(config)
+    agent_id = record["id"]
+
     state.current_agent = AgentInfo(
         name=config.name,
         role=config.role,
@@ -121,7 +126,10 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
     state.last_agent_config = config.model_dump()
 
     tools_str = ", ".join(enabled_tools) or "none"
-    return f"Agent '{config.name}' built with role '{config.role}', tools: {tools_str}"
+    return (
+        f"Agent '{config.name}' built and saved to registry (id: {agent_id}). "
+        f"Role: '{config.role}', tools: {tools_str}"
+    )
 
 
 @copilot_agent.tool
