@@ -13,8 +13,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.ag_ui import AGUIApp, StateDeps
 
 from app.agents.builder import build_agent_from_description
-from app.agents.cerebro import run_cerebro
-from app.agents.factory import AgentConfig, run_agent
+from app.agents.factory import AgentConfig
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, search_memory
 from app.registry import save_agent
@@ -65,23 +64,35 @@ class NexusState(BaseModel):
 
 # ── Copilot agent ────────────────────────────────────────────────────
 
+_SYSTEM_PROMPT = """\
+You are NEXUS, an AI agent platform assistant. You help users build \
+and manage AI agents. Respond in the same language the user writes in.
+
+BUILDING AGENTS:
+When a user asks to build or create an agent:
+- If the request is vague (e.g. "build a news agent"), ask 2-3 \
+clarifying questions BEFORE calling build_agent. Ask about: specific \
+task details, data sources, output format preferences.
+- If the request is detailed enough, go ahead and call build_agent.
+- After building, summarize what was created and how to use it.
+
+TOOLS:
+- build_agent: Build an AI agent (only after gathering requirements)
+- memory_search: Search stored memories
+- memory_add: Save information to memory
+- list_tools: Show available MCP tools
+- browse_web: Browse a web page
+
+For general questions, respond directly without tools.
+After using a tool, give a brief summary of the result.
+"""
+
 copilot_agent = Agent(
-    "groq:llama-3.3-70b-versatile",
+    "anthropic:claude-haiku-4-5-20251001",
     deps_type=StateDeps[NexusState],
-    system_prompt=(
-        "You are NEXUS, an AI agent platform assistant. You help users build, "
-        "run, and manage AI agents. You can:\n"
-        "1. Build agents from natural language descriptions\n"
-        "2. Run agents with specific tasks\n"
-        "3. Run Cerebro multi-agent analysis pipelines\n"
-        "4. Search and manage semantic memory\n"
-        "5. List available MCP tools from connected servers\n"
-        "6. Browse the web using a headless browser (navigate, click, extract)\n\n"
-        "Be concise and helpful. When building agents, confirm the config "
-        "before running. When running Cerebro, explain each stage. "
-        "When browsing the web, use the browse_web tool to navigate to URLs "
-        "and extract content from pages."
-    ),
+    system_prompt=_SYSTEM_PROMPT,
+    model_settings={"max_tokens": 512},
+    retries=1,
 )
 
 
@@ -136,59 +147,7 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
 
 
 @copilot_agent.tool
-async def run_agent_tool(
-    ctx: RunContext[StateDeps[NexusState]], prompt: str, user_id: str = "copilot-user"
-) -> str:
-    """Run the last built agent with a specific task.
-
-    Args:
-        prompt: The task or question for the agent.
-        user_id: User ID for memory integration.
-    """
-    state: NexusState = ctx.deps.state
-    if not state.last_agent_config:
-        return "No agent has been built yet. Use build_agent first."
-
-    state.current_agent.status = "running"
-    config = AgentConfig(**state.last_agent_config)
-    result: dict[str, Any] = await run_agent(config, prompt, user_id=user_id)
-    state.current_agent.status = "completed"
-
-    return f"Agent output: {result['output']}\n\nTokens used: {result['usage']}"
-
-
-@copilot_agent.tool
-async def run_cerebro_tool(ctx: RunContext[StateDeps[NexusState]], query: str) -> str:
-    """Run the Cerebro multi-agent analysis pipeline on a topic.
-
-    Args:
-        query: The topic or question to analyze in depth.
-    """
-    state: NexusState = ctx.deps.state
-    stages = ["Research", "Knowledge", "Analysis", "Synthesis"]
-    state.cerebro_stages = [CerebroStage(name=s, status="pending") for s in stages]
-    state.active_panel = "cerebro"
-
-    # Mark first stage as running
-    state.cerebro_stages[0].status = "running"
-
-    result: dict[str, Any] = await run_cerebro(query)
-
-    # Mark all stages complete with outputs
-    cerebro_result: dict[str, Any] = result.get("result", {})
-    stage_keys = ["research", "knowledge", "analysis", "synthesis"]
-    for i, key in enumerate(stage_keys):
-        stage_output = cerebro_result.get(key, "")
-        output_text = str(stage_output)[:200] if stage_output else "Completed"
-        state.cerebro_stages[i] = CerebroStage(
-            name=stages[i], status="completed", output=output_text
-        )
-
-    return f"Cerebro analysis complete. Usage: {result.get('usage', {})}"
-
-
-@copilot_agent.tool
-async def memory_search_tool(
+async def memory_search(
     ctx: RunContext[StateDeps[NexusState]], query: str, user_id: str = "copilot-user"
 ) -> str:
     """Search semantic memory for relevant information.
@@ -220,7 +179,7 @@ async def memory_search_tool(
 
 
 @copilot_agent.tool
-async def memory_add_tool(
+async def memory_add(
     ctx: RunContext[StateDeps[NexusState]], content: str, user_id: str = "copilot-user"
 ) -> str:
     """Add information to semantic memory.
@@ -238,7 +197,7 @@ async def memory_add_tool(
 
 
 @copilot_agent.tool
-async def list_mcp_tools_tool(
+async def list_tools(
     ctx: RunContext[StateDeps[NexusState]], server_name: str = ""
 ) -> str:
     """List available MCP tools from connected servers.
@@ -270,49 +229,27 @@ async def list_mcp_tools_tool(
 async def browse_web(
     ctx: RunContext[StateDeps[NexusState]],
     url: str,
-    action: str = "snapshot",
 ) -> str:
-    """Browse a web page using the headless browser.
-
-    Navigates to the URL and performs the requested action. Uses the
-    Playwright MCP server for browser automation.
+    """Browse a web page and get its content as structured text.
 
     Args:
         url: The URL to navigate to.
-        action: What to do on the page. Options:
-            "snapshot" - Get the page accessibility tree (default, best for reading)
-            "screenshot" - Take a screenshot of the page
-            "content" - Get the full page HTML content
     """
     try:
-        # Navigate to the URL
         await call_mcp_tool(
             tool_name="browser_navigate",
             arguments={"url": url},
             server_name="playwright",
         )
-
-        # Perform the requested action
-        if action == "screenshot":
-            result = await call_mcp_tool(
-                tool_name="browser_screenshot",
-                arguments={},
-                server_name="playwright",
-            )
-            return f"Screenshot taken of {url}. Result: {str(result)[:500]}"
-
-        # Default: get accessibility snapshot (structured text)
         result = await call_mcp_tool(
             tool_name="browser_snapshot",
             arguments={},
             server_name="playwright",
         )
-        # Truncate to avoid overwhelming the LLM context
         text = str(result)
         if len(text) > 3000:
             text = text[:3000] + "\n... (truncated)"
         return f"Page content from {url}:\n\n{text}"
-
     except ConnectionError as e:
         return (
             f"Browser unavailable: {e}. "
@@ -322,45 +259,9 @@ async def browse_web(
         return f"Browser error: {e}"
 
 
-@copilot_agent.tool
-async def browser_action(
-    ctx: RunContext[StateDeps[NexusState]],
-    tool_name: str,
-    arguments: str = "{}",
-) -> str:
-    """Call any Playwright browser tool directly.
-
-    For advanced browser interactions beyond navigate/snapshot. Use
-    list_mcp_tools_tool with server_name="playwright" to see all
-    available tools.
-
-    Args:
-        tool_name: The Playwright MCP tool name (e.g., "browser_click").
-        arguments: JSON string of arguments for the tool.
-    """
-    import json
-
-    try:
-        args = json.loads(arguments) if arguments else {}
-    except json.JSONDecodeError:
-        return f"Invalid JSON arguments: {arguments}"
-
-    try:
-        result = await call_mcp_tool(
-            tool_name=tool_name,
-            arguments=args,
-            server_name="playwright",
-        )
-        text = str(result)
-        if len(text) > 3000:
-            text = text[:3000] + "\n... (truncated)"
-        return f"Browser tool '{tool_name}' result:\n{text}"
-    except ConnectionError as e:
-        return f"Browser unavailable: {e}"
-    except Exception as e:
-        return f"Browser tool error: {e}"
-
-
 # ── AG-UI app instance ───────────────────────────────────────────────
 
-copilot_app = AGUIApp(copilot_agent, deps=StateDeps(NexusState()))
+copilot_app = AGUIApp(
+    copilot_agent,
+    deps=StateDeps(NexusState()),
+)
