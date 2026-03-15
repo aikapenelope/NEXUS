@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
-from app.agents.factory import AgentConfig, run_agent
+from app.agents.factory import AgentConfig, run_deep_agent
 from app.copilot import copilot_app
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
@@ -207,7 +207,7 @@ async def run_agent_endpoint(request: RunRequest) -> RunResponse:
     """
     try:
         t0 = time.monotonic()
-        result = await run_agent(request.config, request.prompt, user_id=request.user_id)
+        result = await run_deep_agent(request.config, request.prompt, user_id=request.user_id)
         latency = int((time.monotonic() - t0) * 1000)
         usage = result["usage"]
         await save_run(
@@ -291,7 +291,7 @@ async def run_saved_agent_endpoint(
             raise HTTPException(status_code=404, detail="Agent not found")
         config = await agent_config_from_record(record)
         t0 = time.monotonic()
-        result = await run_agent(config, request.prompt, user_id=request.user_id)
+        result = await run_deep_agent(config, request.prompt, user_id=request.user_id)
         latency = int((time.monotonic() - t0) * 1000)
         usage = result["usage"]
         total_tokens = usage.get("total_tokens", 0)
