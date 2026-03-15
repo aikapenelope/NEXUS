@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import logfire
@@ -23,6 +24,7 @@ from app.registry import (
     save_agent,
     update_agent_run_stats,
 )
+from app.traces import get_dashboard_stats, get_run, list_runs, save_run
 
 # ── Observability ────────────────────────────────────────────────────
 # Logfire auto-instruments Pydantic AI (agent runs, tool calls, LLM
@@ -177,8 +179,20 @@ async def build_agent_endpoint(request: BuildRequest) -> BuildResponse:
     AgentConfig, then auto-saves it to the registry.
     """
     try:
+        t0 = time.monotonic()
         config = await build_agent_from_description(request.description)
+        latency = int((time.monotonic() - t0) * 1000)
         record = await save_agent(config)
+        await save_run(
+            agent_id=record["id"],
+            agent_name=config.name,
+            prompt=request.description,
+            output=f"Built agent: {config.name}",
+            model="anthropic:claude-haiku-4-5",
+            role="builder",
+            latency_ms=latency,
+            source="build",
+        )
         return BuildResponse(config=config, agent_id=record["id"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Builder agent failed: {e}") from e
@@ -192,8 +206,23 @@ async def run_agent_endpoint(request: RunRequest) -> RunResponse:
     limits, and the result is returned with usage metadata.
     """
     try:
+        t0 = time.monotonic()
         result = await run_agent(request.config, request.prompt, user_id=request.user_id)
-        return RunResponse(output=result["output"], usage=result["usage"])
+        latency = int((time.monotonic() - t0) * 1000)
+        usage = result["usage"]
+        await save_run(
+            agent_name=request.config.name,
+            prompt=request.prompt,
+            output=result["output"][:2000],
+            model=request.config.role,
+            role=request.config.role,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            latency_ms=latency,
+            source="run",
+        )
+        return RunResponse(output=result["output"], usage=usage)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}") from e
 
@@ -261,10 +290,26 @@ async def run_saved_agent_endpoint(
         if record is None:
             raise HTTPException(status_code=404, detail="Agent not found")
         config = await agent_config_from_record(record)
+        t0 = time.monotonic()
         result = await run_agent(config, request.prompt, user_id=request.user_id)
-        total_tokens = result["usage"].get("total_tokens", 0)
+        latency = int((time.monotonic() - t0) * 1000)
+        usage = result["usage"]
+        total_tokens = usage.get("total_tokens", 0)
         await update_agent_run_stats(agent_id, tokens_used=total_tokens)
-        return RunResponse(output=result["output"], usage=result["usage"])
+        await save_run(
+            agent_id=agent_id,
+            agent_name=config.name,
+            prompt=request.prompt,
+            output=result["output"][:2000],
+            model=config.role,
+            role=config.role,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            total_tokens=total_tokens,
+            latency_ms=latency,
+            source="run",
+        )
+        return RunResponse(output=result["output"], usage=usage)
     except HTTPException:
         raise
     except Exception as e:
@@ -280,12 +325,91 @@ async def cerebro_analyze(request: CerebroRequest) -> CerebroResponse:
     token and cost limits.
     """
     try:
+        t0 = time.monotonic()
         result = await run_cerebro(request.query)
-        return CerebroResponse(result=result["result"], usage=result["usage"])
+        latency = int((time.monotonic() - t0) * 1000)
+        usage = result["usage"]
+        await save_run(
+            agent_name="cerebro",
+            prompt=request.query,
+            output=str(result["result"].get("summary", ""))[:2000],
+            model="multi-model",
+            role="analysis",
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            latency_ms=latency,
+            source="cerebro",
+        )
+        return CerebroResponse(result=result["result"], usage=usage)
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Cerebro pipeline failed: {e}",
+        ) from e
+
+
+# ── Run history endpoints ────────────────────────────────────────────
+
+
+class RunListResponse(BaseModel):
+    """List of run traces."""
+
+    runs: list[dict[str, Any]]
+
+
+class RunDetailResponse(BaseModel):
+    """Single run trace detail."""
+
+    run: dict[str, Any]
+
+
+@app.get("/runs", response_model=RunListResponse)
+async def list_runs_endpoint(
+    limit: int = 50,
+    agent_id: str | None = None,
+    source: str | None = None,
+) -> RunListResponse:
+    """List run traces, optionally filtered by agent_id or source."""
+    try:
+        runs = await list_runs(limit=limit, agent_id=agent_id, source=source)
+        return RunListResponse(runs=runs)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Run list failed: {e}") from e
+
+
+@app.get("/runs/{run_id}", response_model=RunDetailResponse)
+async def get_run_endpoint(run_id: str) -> RunDetailResponse:
+    """Get a single run trace by ID."""
+    try:
+        record = await get_run(run_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return RunDetailResponse(run=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Run get failed: {e}") from e
+
+
+# ── Dashboard endpoints ──────────────────────────────────────────────
+
+
+class DashboardStatsResponse(BaseModel):
+    """Aggregate metrics for the dashboard overview."""
+
+    stats: dict[str, Any]
+
+
+@app.get("/dashboard/stats", response_model=DashboardStatsResponse)
+async def dashboard_stats() -> DashboardStatsResponse:
+    """Get aggregate dashboard metrics: totals, time-series, breakdowns."""
+    try:
+        stats = await get_dashboard_stats()
+        return DashboardStatsResponse(stats=stats)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Dashboard stats failed: {e}"
         ) from e
 
 
