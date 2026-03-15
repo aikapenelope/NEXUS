@@ -1,7 +1,9 @@
 "use client";
 
-import { Bot, Brain, Database } from "lucide-react";
-import type { NexusState } from "@/lib/types";
+import { useEffect, useState, useCallback } from "react";
+import { Bot, Brain, Database, RefreshCw } from "lucide-react";
+import type { NexusState, RegistryAgent } from "@/lib/types";
+import { fetchAgents } from "@/lib/api";
 
 interface RightPanelProps {
   state: NexusState | undefined;
@@ -24,52 +26,181 @@ export function RightPanel({ state }: RightPanelProps) {
   );
 }
 
+// ── Agent Panel (current agent + registry list) ─────────────────────
+
 function AgentPanel({ state }: { state: NexusState }) {
   const agent = state.current_agent;
-  if (!agent.name) {
-    return (
-      <div className="text-zinc-500 text-sm">
-        <Bot className="w-5 h-5 mb-2" />
-        No agent built yet. Ask NEXUS to build one.
-      </div>
-    );
-  }
+  const [registryAgents, setRegistryAgents] = useState<RegistryAgent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const loadAgents = useCallback(async () => {
+    setLoading(true);
+    try {
+      const agents = await fetchAgents();
+      setRegistryAgents(agents);
+    } catch {
+      // Silently fail — API may not be reachable yet
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
+
+  const selected = registryAgents.find((a) => a.id === selectedId);
+
   return (
-    <div>
-      <h3 className="text-sm font-medium text-zinc-300 mb-3 flex items-center gap-2">
-        <Bot className="w-4 h-4" /> Agent Details
-      </h3>
-      <div className="space-y-2 text-sm">
-        <div className="flex justify-between">
-          <span className="text-zinc-500">Name</span>
-          <span className="text-zinc-200">{agent.name}</span>
+    <div className="space-y-4">
+      {/* Current agent from AG-UI state */}
+      {agent.name && (
+        <div>
+          <h3 className="text-sm font-medium text-zinc-300 mb-2 flex items-center gap-2">
+            <Bot className="w-4 h-4" /> Current Agent
+          </h3>
+          <CurrentAgentCard agent={agent} />
         </div>
-        <div className="flex justify-between">
-          <span className="text-zinc-500">Model</span>
-          <span className="text-zinc-200">{agent.model}</span>
+      )}
+
+      {/* Registry agents */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+            <Database className="w-4 h-4" /> Saved Agents
+          </h3>
+          <button
+            onClick={() => void loadAgents()}
+            disabled={loading}
+            className="p-1 text-zinc-500 hover:text-zinc-300 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+          </button>
         </div>
-        <div className="flex justify-between">
-          <span className="text-zinc-500">Status</span>
-          <span className={agent.status === "ready" ? "text-emerald-400" : "text-zinc-400"}>
-            {agent.status}
-          </span>
-        </div>
-        {agent.tools.length > 0 && (
-          <div>
-            <span className="text-zinc-500">Tools</span>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {agent.tools.map((tool) => (
-                <span key={tool} className="px-2 py-0.5 bg-zinc-800 rounded text-xs text-zinc-300">
-                  {tool}
-                </span>
-              ))}
-            </div>
-          </div>
+
+        {registryAgents.length === 0 && !loading && (
+          <p className="text-zinc-500 text-xs">
+            No agents saved yet. Build one via chat.
+          </p>
         )}
+
+        <div className="space-y-1.5">
+          {registryAgents.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => setSelectedId(selectedId === a.id ? null : a.id)}
+              className={`w-full text-left p-2 rounded border transition-colors ${
+                selectedId === a.id
+                  ? "border-emerald-500/50 bg-emerald-500/5"
+                  : "border-zinc-800 bg-zinc-900 hover:border-zinc-700"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-zinc-200 truncate">{a.name}</span>
+                <span className="text-xs text-zinc-500">{a.role}</span>
+              </div>
+              <p className="text-xs text-zinc-500 truncate mt-0.5">{a.description}</p>
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Selected agent detail */}
+      {selected && <AgentDetail agent={selected} />}
     </div>
   );
 }
+
+function CurrentAgentCard({ agent }: { agent: NexusState["current_agent"] }) {
+  return (
+    <div className="p-2 bg-zinc-900 rounded border border-zinc-800 space-y-1.5 text-sm">
+      <div className="flex justify-between">
+        <span className="text-zinc-500">Name</span>
+        <span className="text-zinc-200">{agent.name}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-zinc-500">Role</span>
+        <span className="text-zinc-200">{agent.model}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-zinc-500">Status</span>
+        <span className={agent.status === "ready" ? "text-emerald-400" : "text-zinc-400"}>
+          {agent.status}
+        </span>
+      </div>
+      {agent.tools.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {agent.tools.map((tool) => (
+            <span key={tool} className="px-2 py-0.5 bg-zinc-800 rounded text-xs text-zinc-300">
+              {tool}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentDetail({ agent }: { agent: RegistryAgent }) {
+  const enabledTools: string[] = [];
+  if (agent.include_todo) enabledTools.push("todo");
+  if (agent.include_filesystem) enabledTools.push("filesystem");
+  if (agent.include_subagents) enabledTools.push("subagents");
+  if (agent.include_skills) enabledTools.push("skills");
+  if (agent.include_memory) enabledTools.push("memory");
+  if (agent.include_web) enabledTools.push("web");
+
+  return (
+    <div className="p-3 bg-zinc-900 rounded border border-zinc-800 space-y-2">
+      <h4 className="text-sm font-medium text-zinc-200">{agent.name}</h4>
+      <p className="text-xs text-zinc-400">{agent.description}</p>
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <span className="text-zinc-500">Role</span>
+        <span className="text-zinc-300">{agent.role}</span>
+
+        <span className="text-zinc-500">Status</span>
+        <span className={agent.status === "ready" ? "text-emerald-400" : "text-zinc-400"}>
+          {agent.status}
+        </span>
+
+        <span className="text-zinc-500">Runs</span>
+        <span className="text-zinc-300">{agent.total_runs}</span>
+
+        <span className="text-zinc-500">Tokens</span>
+        <span className="text-zinc-300">{agent.total_tokens.toLocaleString()}</span>
+
+        <span className="text-zinc-500">Created</span>
+        <span className="text-zinc-300">
+          {new Date(agent.created_at).toLocaleDateString()}
+        </span>
+
+        {agent.last_run_at && (
+          <>
+            <span className="text-zinc-500">Last run</span>
+            <span className="text-zinc-300">
+              {new Date(agent.last_run_at).toLocaleDateString()}
+            </span>
+          </>
+        )}
+      </div>
+
+      {enabledTools.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          {enabledTools.map((tool) => (
+            <span key={tool} className="px-2 py-0.5 bg-zinc-800 rounded text-xs text-zinc-300">
+              {tool}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Cerebro Panel ───────────────────────────────────────────────────
 
 function CerebroPanel({ state }: { state: NexusState }) {
   const stages = state.cerebro_stages;
@@ -110,6 +241,8 @@ function CerebroPanel({ state }: { state: NexusState }) {
     </div>
   );
 }
+
+// ── Memory Panel ────────────────────────────────────────────────────
 
 function MemoryPanel({ state }: { state: NexusState }) {
   const memories = state.memories;

@@ -16,6 +16,13 @@ from app.agents.factory import AgentConfig, run_agent
 from app.copilot import copilot_app
 from app.mcp import call_mcp_tool, list_mcp_tools
 from app.memory import add_memory, get_user_memories, search_memory
+from app.registry import (
+    agent_config_from_record,
+    get_agent,
+    list_agents,
+    save_agent,
+    update_agent_run_stats,
+)
 
 # ── Observability ────────────────────────────────────────────────────
 # Logfire auto-instruments Pydantic AI (agent runs, tool calls, LLM
@@ -61,9 +68,10 @@ class BuildRequest(BaseModel):
 
 
 class BuildResponse(BaseModel):
-    """The generated AgentConfig from the builder agent."""
+    """The generated AgentConfig from the builder agent, auto-saved to registry."""
 
     config: AgentConfig
+    agent_id: str = Field(description="UUID of the saved agent in the registry")
 
 
 class RunRequest(BaseModel):
@@ -166,11 +174,12 @@ async def build_agent_endpoint(request: BuildRequest) -> BuildResponse:
     """Build an agent from a natural language description.
 
     Uses Claude Haiku to translate the description into a validated
-    AgentConfig.
+    AgentConfig, then auto-saves it to the registry.
     """
     try:
         config = await build_agent_from_description(request.description)
-        return BuildResponse(config=config)
+        record = await save_agent(config)
+        return BuildResponse(config=config, agent_id=record["id"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Builder agent failed: {e}") from e
 
@@ -187,6 +196,79 @@ async def run_agent_endpoint(request: RunRequest) -> RunResponse:
         return RunResponse(output=result["output"], usage=result["usage"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}") from e
+
+
+# ── Agent Registry endpoints ─────────────────────────────────────────
+
+
+class AgentListResponse(BaseModel):
+    """List of saved agents from the registry."""
+
+    agents: list[dict[str, Any]]
+
+
+class AgentDetailResponse(BaseModel):
+    """Single agent detail from the registry."""
+
+    agent: dict[str, Any]
+
+
+class RunSavedAgentRequest(BaseModel):
+    """Run a saved agent by its registry ID."""
+
+    prompt: str = Field(description="The task or question for the agent")
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID for Mem0 semantic memory integration",
+    )
+
+
+@app.get("/agents", response_model=AgentListResponse)
+async def list_agents_endpoint(limit: int = 50) -> AgentListResponse:
+    """List all saved agents from the registry."""
+    try:
+        agents = await list_agents(limit=limit)
+        return AgentListResponse(agents=agents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent list failed: {e}") from e
+
+
+@app.get("/agents/{agent_id}", response_model=AgentDetailResponse)
+async def get_agent_endpoint(agent_id: str) -> AgentDetailResponse:
+    """Get a single agent by ID from the registry."""
+    try:
+        record = await get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentDetailResponse(agent=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent get failed: {e}") from e
+
+
+@app.post("/agents/{agent_id}/run", response_model=RunResponse)
+async def run_saved_agent_endpoint(
+    agent_id: str, request: RunSavedAgentRequest
+) -> RunResponse:
+    """Run a saved agent from the registry by its ID.
+
+    Loads the AgentConfig from the registry, runs it, and updates
+    the run statistics (total_runs, total_tokens, last_run_at).
+    """
+    try:
+        record = await get_agent(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        config = await agent_config_from_record(record)
+        result = await run_agent(config, request.prompt, user_id=request.user_id)
+        total_tokens = result["usage"].get("total_tokens", 0)
+        await update_agent_run_stats(agent_id, tokens_used=total_tokens)
+        return RunResponse(output=result["output"], usage=result["usage"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent run failed: {e}") from e
 
 
 @app.post("/cerebro/analyze", response_model=CerebroResponse)
