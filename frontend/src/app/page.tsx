@@ -4,6 +4,7 @@ import { CopilotChat } from "@copilotkit/react-ui";
 import { useCoAgent } from "@copilotkit/react-core";
 import { Sidebar } from "@/components/Sidebar";
 import { RightPanel } from "@/components/RightPanel";
+import { ChatPersistence } from "@/components/ChatPersistence";
 import { StateRenderers } from "@/components/generative-ui/StateRenderers";
 import type { NexusState } from "@/lib/types";
 
@@ -35,7 +36,8 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-zinc-950">
-      {/* Generative UI state renderers (invisible — inject components into chat) */}
+      {/* Side-effect components (invisible) */}
+      <ChatPersistence />
       <StateRenderers />
 
       {/* Left sidebar */}

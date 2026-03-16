@@ -22,6 +22,44 @@ interface AgentDeleteResponse {
   agent_id: string;
 }
 
+/** Fields for creating a new agent manually. */
+export interface CreateAgentPayload {
+  name: string;
+  description: string;
+  instructions?: string;
+  role?: string;
+  include_todo?: boolean;
+  include_filesystem?: boolean;
+  include_subagents?: boolean;
+  include_skills?: boolean;
+  include_memory?: boolean;
+  include_web?: boolean;
+  context_manager?: boolean;
+  token_limit?: number | null;
+  cost_budget_usd?: number | null;
+}
+
+interface AgentCreateResponse {
+  agent: RegistryAgent;
+  agent_id: string;
+}
+
+/** Create a new agent manually (no LLM builder). */
+export async function createAgent(
+  payload: CreateAgentPayload
+): Promise<RegistryAgent> {
+  const res = await fetch(`${API_BASE}/api/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create agent: ${res.status}`);
+  }
+  const data: AgentCreateResponse = await res.json();
+  return data.agent;
+}
+
 /** Fetch all saved agents from the registry. */
 export async function fetchAgents(): Promise<RegistryAgent[]> {
   const res = await fetch(`${API_BASE}/api/agents`);
