@@ -126,9 +126,10 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
     if config.include_web:
         enabled_tools.append("web")
 
-    # Auto-save to registry
+    # Auto-save to registry (upserts if name already exists)
     record = await save_agent(config)
     agent_id = record["id"]
+    action = record.get("_action", "created")
 
     state.current_agent = AgentInfo(
         name=config.name,
@@ -140,8 +141,9 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
     state.last_agent_config = config.model_dump()
 
     tools_str = ", ".join(enabled_tools) or "none"
+    verb = "updated" if action == "updated" else "created"
     return (
-        f"Agent '{config.name}' built and saved to registry (id: {agent_id}). "
+        f"Agent '{config.name}' {verb} in registry (id: {agent_id}). "
         f"Role: '{config.role}', tools: {tools_str}"
     )
 

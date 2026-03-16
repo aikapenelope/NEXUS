@@ -71,7 +71,11 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
 
 
 async def save_agent(config: AgentConfig) -> dict[str, Any]:
-    """Save an AgentConfig to the registry and return the stored record.
+    """Save an AgentConfig to the registry, deduplicating by name.
+
+    If an agent with the same name (case-insensitive) already exists,
+    its configuration is updated instead of creating a duplicate.
+    The returned dict includes an "_action" key: "created" or "updated".
 
     Args:
         config: The AgentConfig produced by the builder agent.
@@ -79,6 +83,28 @@ async def save_agent(config: AgentConfig) -> dict[str, Any]:
     Returns:
         Dict with the saved agent record including generated id and timestamps.
     """
+    # Check for existing agent with the same name
+    existing = await find_agent_by_name(config.name)
+    if existing is not None:
+        updates = {
+            "description": config.description,
+            "instructions": config.instructions,
+            "role": config.role,
+            "include_todo": config.include_todo,
+            "include_filesystem": config.include_filesystem,
+            "include_subagents": config.include_subagents,
+            "include_skills": config.include_skills,
+            "include_memory": config.include_memory,
+            "include_web": config.include_web,
+            "context_manager": config.context_manager,
+            "token_limit": config.token_limit,
+            "cost_budget_usd": config.cost_budget_usd,
+        }
+        updated = await update_agent(existing["id"], updates)
+        if updated is not None:
+            updated["_action"] = "updated"
+            return updated
+
     pool = await _get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -108,7 +134,9 @@ async def save_agent(config: AgentConfig) -> dict[str, Any]:
     if row is None:
         msg = "Failed to insert agent"
         raise RuntimeError(msg)
-    return _row_to_dict(row)
+    result = _row_to_dict(row)
+    result["_action"] = "created"
+    return result
 
 
 async def get_agent(agent_id: str) -> dict[str, Any] | None:
@@ -178,6 +206,99 @@ async def update_agent_run_stats(
             uuid.UUID(agent_id),
             tokens_used,
             datetime.now(timezone.utc),
+        )
+    return _row_to_dict(row) if row else None
+
+
+async def update_agent(
+    agent_id: str,
+    updates: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Update an agent's editable fields.
+
+    Only the fields present in `updates` are modified. Allowed fields:
+    name, description, instructions, role, include_todo, include_filesystem,
+    include_subagents, include_skills, include_memory, include_web,
+    context_manager, token_limit, cost_budget_usd, status.
+
+    Args:
+        agent_id: UUID string of the agent.
+        updates: Dict of field names to new values.
+
+    Returns:
+        Updated agent record dict, or None if not found.
+    """
+    allowed = {
+        "name",
+        "description",
+        "instructions",
+        "role",
+        "include_todo",
+        "include_filesystem",
+        "include_subagents",
+        "include_skills",
+        "include_memory",
+        "include_web",
+        "context_manager",
+        "token_limit",
+        "cost_budget_usd",
+        "status",
+    }
+    filtered = {k: v for k, v in updates.items() if k in allowed}
+    if not filtered:
+        return await get_agent(agent_id)
+
+    # Build dynamic SET clause: "name = $2, role = $3, ..."
+    set_parts: list[str] = []
+    values: list[Any] = [uuid.UUID(agent_id)]
+    for i, (col, val) in enumerate(filtered.items(), start=2):
+        set_parts.append(f"{col} = ${i}")
+        values.append(val)
+
+    sql = f"UPDATE nexus_agents SET {', '.join(set_parts)} WHERE id = $1 RETURNING *"
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, *values)
+    return _row_to_dict(row) if row else None
+
+
+async def delete_agent(agent_id: str) -> bool:
+    """Delete an agent from the registry.
+
+    Args:
+        agent_id: UUID string of the agent.
+
+    Returns:
+        True if the agent was deleted, False if not found.
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM nexus_agents WHERE id = $1",
+            uuid.UUID(agent_id),
+        )
+    # asyncpg returns "DELETE N" where N is the number of rows deleted
+    return result == "DELETE 1"
+
+
+async def find_agent_by_name(name: str) -> dict[str, Any] | None:
+    """Find the most recent agent with the given name.
+
+    Used by the builder for deduplication: if an agent with the same name
+    already exists, the builder can update it instead of creating a new one.
+
+    Args:
+        name: Agent name to search for (case-insensitive).
+
+    Returns:
+        Agent record dict, or None if not found.
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM nexus_agents WHERE LOWER(name) = LOWER($1) "
+            "ORDER BY created_at DESC LIMIT 1",
+            name,
         )
     return _row_to_dict(row) if row else None
 
