@@ -114,6 +114,14 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class ReadinessResponse(BaseModel):
+    """Detailed readiness check response."""
+
+    status: str
+    version: str
+    checks: dict[str, str]
+
+
 # ── Memory request / response models ────────────────────────────────
 
 
@@ -167,8 +175,64 @@ class MemoryListResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check endpoint."""
+    """Lightweight liveness check (no external calls)."""
     return HealthResponse(status="ok", version="0.4.0")
+
+
+@app.get("/health/ready", response_model=ReadinessResponse)
+async def health_ready() -> ReadinessResponse:
+    """Deep readiness check: verifies DB, Redis, and MCP connectivity."""
+    import asyncpg
+    import redis.asyncio as aioredis
+
+    from app.config import settings
+
+    checks: dict[str, str] = {}
+    all_ok = True
+
+    # PostgreSQL
+    try:
+        conn = await asyncpg.connect(dsn=settings.database_url, timeout=5)
+        await conn.fetchval("SELECT 1")
+        await conn.close()
+        checks["postgres"] = "ok"
+    except Exception as e:
+        checks["postgres"] = f"error: {e}"
+        all_ok = False
+
+    # Redis
+    try:
+        r = aioredis.from_url(settings.redis_url, socket_connect_timeout=5)
+        result = r.ping()  # type stubs say bool, runtime is coroutine
+        if hasattr(result, "__await__"):
+            await result  # type: ignore[misc]
+        await r.aclose()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+        all_ok = False
+
+    # MCP: Playwright
+    try:
+        tools = await list_mcp_tools(server_name="playwright")
+        checks["mcp_playwright"] = f"ok ({len(tools)} tools)"
+    except Exception as e:
+        checks["mcp_playwright"] = f"error: {e}"
+        all_ok = False
+
+    # MCP: n8n
+    try:
+        tools = await list_mcp_tools(server_name="n8n")
+        checks["mcp_n8n"] = f"ok ({len(tools)} tools)"
+    except Exception as e:
+        checks["mcp_n8n"] = f"error: {e}"
+        all_ok = False
+
+    status = "ok" if all_ok else "degraded"
+    resp = ReadinessResponse(status=status, version="0.4.0", checks=checks)
+    if not all_ok:
+        raise HTTPException(status_code=503, detail=resp.model_dump())
+    return resp
 
 
 @app.post("/agents/build", response_model=BuildResponse)

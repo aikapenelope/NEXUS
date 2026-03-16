@@ -12,12 +12,21 @@
 #
 # Observability: Logfire Cloud (free tier, no self-hosted container needed)
 
+# ── Shared log rotation config ──────────────────────────────────────
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # ── NEXUS API ────────────────────────────────────────────────────
   nexus-api:
     build: .
     container_name: nexus-api
     restart: unless-stopped
+    mem_limit: 4g
+    cpus: 4
     ports:
       - "8000:8000"
     environment:
@@ -34,6 +43,7 @@ services:
       - NEXUS_DEBUG=false
       # Logfire observability (optional — noop if not set)
       - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
+    logging: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,22 +59,31 @@ services:
       dockerfile: Dockerfile
     container_name: nexus-frontend
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_COPILOT_API_URL=/api/copilotkit
+    logging: *default-logging
     depends_on:
       - nexus-api
     networks:
       - nexus-net
 
   # ── PostgreSQL + pgvector ────────────────────────────────────────
+  # Connection pooling note: PgBouncer not needed yet.
+  # 4 gunicorn workers x 2 asyncpg pools (registry + traces) x max_size=5 = 40 conns.
+  # Plus mem0 (~1), prefect (~5), n8n (~5) = ~51 total. PG default max_connections=100.
+  # Revisit if workers increase or new services are added.
   postgres:
     image: pgvector/pgvector:pg17
     container_name: nexus-postgres
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: 2
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: nexus
@@ -72,6 +91,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nexus"]
       interval: 10s
@@ -85,10 +105,13 @@ services:
     image: redis:7-alpine
     container_name: nexus-redis
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -102,6 +125,8 @@ services:
     image: n8nio/n8n:latest
     container_name: nexus-n8n
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1
     ports:
       - "5678:5678"
     environment:
@@ -117,6 +142,7 @@ services:
       - DB_POSTGRESDB_SCHEMA=n8n
     volumes:
       - n8n-data:/home/node/.n8n
+    logging: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,22 +150,18 @@ services:
       - nexus-net
 
   # ── Playwright MCP (browser automation) ─────────────────────────
+  # Official mcp/playwright image (1.43GB vs 3.63GB for full Playwright).
+  # Includes Chromium + MCP server. Entrypoint: node cli.js --headless.
   playwright:
-    image: mcr.microsoft.com/playwright:v1.54.0-noble
+    image: mcp/playwright:latest
     container_name: nexus-playwright
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: 1
     ports:
       - "8931:8931"
-    environment:
-      - HEADLESS=true
-      - MCP_PORT=8931
-    working_dir: /app
-    entrypoint:
-      - sh
-      - -c
-      - |
-        npm install -g @playwright/mcp@latest 2>/dev/null &&
-        npx @playwright/mcp --headless --host 0.0.0.0 --port 8931 --no-sandbox --allowed-hosts '*'
+    command: ["--port", "8931", "--host", "0.0.0.0"]
+    logging: *default-logging
     networks:
       - nexus-net
 
@@ -148,12 +170,15 @@ services:
     image: prefecthq/prefect:3-latest
     container_name: nexus-prefect
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     ports:
-      - "4200:4200"
+      - "127.0.0.1:4200:4200"
     environment:
       - PREFECT_SERVER_API_HOST=0.0.0.0
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
     command: prefect server start
+    logging: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
