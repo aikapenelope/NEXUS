@@ -27,6 +27,13 @@ from app.registry import (
     update_agent_run_stats,
 )
 from app.traces import get_dashboard_stats, get_run, list_runs, save_run
+from app.workflows import (
+    delete_workflow,
+    get_workflow,
+    list_workflows,
+    run_workflow,
+    save_workflow,
+)
 
 # ── Observability ────────────────────────────────────────────────────
 # Logfire auto-instruments Pydantic AI (agent runs, tool calls, LLM
@@ -122,6 +129,34 @@ class ReadinessResponse(BaseModel):
     status: str
     version: str
     checks: dict[str, str]
+
+
+class AgentCreateRequest(BaseModel):
+    """Create an agent manually from a full AgentConfig (no LLM builder)."""
+
+    name: str = Field(description="Short identifier for the agent")
+    description: str = Field(description="What the agent does")
+    instructions: str = Field(default="", description="System prompt / instructions")
+    role: str = Field(
+        default="worker",
+        description="Model routing role: 'builder', 'analysis', or 'worker'",
+    )
+    include_todo: bool = Field(default=False)
+    include_filesystem: bool = Field(default=False)
+    include_subagents: bool = Field(default=False)
+    include_skills: bool = Field(default=False)
+    include_memory: bool = Field(default=False)
+    include_web: bool = Field(default=False)
+    context_manager: bool = Field(default=False)
+    token_limit: int | None = Field(default=None, description="Max tokens per run")
+    cost_budget_usd: float | None = Field(default=None, description="Max USD cost per run")
+
+
+class AgentCreateResponse(BaseModel):
+    """Response after manually creating an agent."""
+
+    agent: dict[str, Any]
+    agent_id: str = Field(description="UUID of the saved agent in the registry")
 
 
 class AgentUpdateRequest(BaseModel):
@@ -342,6 +377,35 @@ class RunSavedAgentRequest(BaseModel):
         default=None,
         description="Optional user ID for Mem0 semantic memory integration",
     )
+
+
+@app.post("/agents", response_model=AgentCreateResponse, status_code=201)
+async def create_agent_endpoint(request: AgentCreateRequest) -> AgentCreateResponse:
+    """Create an agent manually from explicit fields (no LLM builder).
+
+    Converts the request into an AgentConfig and saves it to the registry.
+    If an agent with the same name already exists, it is updated (upsert).
+    """
+    try:
+        config = AgentConfig(
+            name=request.name,
+            description=request.description,
+            instructions=request.instructions,
+            role=request.role,
+            include_todo=request.include_todo,
+            include_filesystem=request.include_filesystem,
+            include_subagents=request.include_subagents,
+            include_skills=request.include_skills,
+            include_memory=request.include_memory,
+            include_web=request.include_web,
+            context_manager=request.context_manager,
+            token_limit=request.token_limit,
+            cost_budget_usd=request.cost_budget_usd,
+        )
+        record = await save_agent(config)
+        return AgentCreateResponse(agent=record, agent_id=record["id"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent creation failed: {e}") from e
 
 
 @app.get("/agents", response_model=AgentListResponse)
@@ -685,3 +749,156 @@ async def mcp_call(request: MCPCallRequest) -> MCPCallResponse:
         return MCPCallResponse(result=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MCP tool call failed: {e}") from e
+
+
+# ── Workflow models ──────────────────────────────────────────────────
+
+
+class WorkflowStep(BaseModel):
+    """A single step in a workflow pipeline."""
+
+    agent_name: str = Field(description="Name or ID of the agent to run")
+    prompt_template: str = Field(
+        default="{input}",
+        description="Prompt template with {input} placeholder for previous output",
+    )
+
+
+class WorkflowCreateRequest(BaseModel):
+    """Create a new workflow (sequential agent pipeline)."""
+
+    name: str = Field(description="Short identifier for the workflow")
+    description: str = Field(default="", description="What the workflow does")
+    steps: list[WorkflowStep] = Field(
+        description="Ordered list of agent steps to execute"
+    )
+
+
+class WorkflowCreateResponse(BaseModel):
+    """Response after creating a workflow."""
+
+    workflow: dict[str, Any]
+
+
+class WorkflowListResponse(BaseModel):
+    """List of saved workflows."""
+
+    workflows: list[dict[str, Any]]
+
+
+class WorkflowDetailResponse(BaseModel):
+    """Single workflow detail."""
+
+    workflow: dict[str, Any]
+
+
+class WorkflowDeleteResponse(BaseModel):
+    """Confirmation of workflow deletion."""
+
+    deleted: bool
+    workflow_id: str
+
+
+class WorkflowRunRequest(BaseModel):
+    """Run a workflow with an initial input."""
+
+    input: str = Field(description="Starting prompt for the first agent in the pipeline")
+
+
+class WorkflowRunResponse(BaseModel):
+    """Result of running a workflow pipeline."""
+
+    workflow_id: str
+    workflow_name: str
+    steps: list[dict[str, Any]]
+    final_output: str
+    total_steps: int
+
+
+# ── Workflow endpoints ───────────────────────────────────────────────
+
+
+@app.post("/workflows", response_model=WorkflowCreateResponse, status_code=201)
+async def create_workflow_endpoint(
+    request: WorkflowCreateRequest,
+) -> WorkflowCreateResponse:
+    """Create a new workflow (sequential agent pipeline)."""
+    try:
+        steps_data = [s.model_dump() for s in request.steps]
+        record = await save_workflow(
+            name=request.name,
+            description=request.description,
+            steps=steps_data,
+        )
+        return WorkflowCreateResponse(workflow=record)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow creation failed: {e}"
+        ) from e
+
+
+@app.get("/workflows", response_model=WorkflowListResponse)
+async def list_workflows_endpoint(limit: int = 50) -> WorkflowListResponse:
+    """List all saved workflows."""
+    try:
+        workflows = await list_workflows(limit=limit)
+        return WorkflowListResponse(workflows=workflows)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow list failed: {e}"
+        ) from e
+
+
+@app.get("/workflows/{workflow_id}", response_model=WorkflowDetailResponse)
+async def get_workflow_endpoint(workflow_id: str) -> WorkflowDetailResponse:
+    """Get a single workflow by ID."""
+    try:
+        record = await get_workflow(workflow_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        return WorkflowDetailResponse(workflow=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow get failed: {e}"
+        ) from e
+
+
+@app.delete("/workflows/{workflow_id}", response_model=WorkflowDeleteResponse)
+async def delete_workflow_endpoint(
+    workflow_id: str,
+) -> WorkflowDeleteResponse:
+    """Delete a workflow."""
+    try:
+        deleted = await delete_workflow(workflow_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        return WorkflowDeleteResponse(deleted=True, workflow_id=workflow_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow delete failed: {e}"
+        ) from e
+
+
+@app.post(
+    "/workflows/{workflow_id}/run", response_model=WorkflowRunResponse
+)
+async def run_workflow_endpoint(
+    workflow_id: str, request: WorkflowRunRequest
+) -> WorkflowRunResponse:
+    """Execute a workflow: run each agent step sequentially.
+
+    The output of each agent becomes the input for the next step.
+    """
+    try:
+        result = await run_workflow(workflow_id, request.input)
+        return WorkflowRunResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow execution failed: {e}"
+        ) from e

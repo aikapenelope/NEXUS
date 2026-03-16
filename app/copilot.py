@@ -13,10 +13,16 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.ag_ui import AGUIApp, StateDeps
 
 from app.agents.builder import build_agent_from_description
-from app.agents.factory import AgentConfig
+from app.agents.factory import AgentConfig, run_deep_agent
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, search_memory
-from app.registry import save_agent
+from app.registry import (
+    agent_config_from_record,
+    get_agent,
+    list_agents,
+    save_agent,
+)
+from app.traces import save_run
 
 # ── Shared state (synced to frontend via AG-UI) ─────────────────────
 
@@ -105,6 +111,8 @@ understand exactly what the user needs. Follow this process:
 
 TOOLS:
 - build_agent: Create an AI agent (ONLY after discovery + confirmation)
+- list_agents: List all saved agents in the registry (use to show what exists)
+- run_agent: Execute a saved agent by name or ID with a prompt, returns the result
 - memory_search: Search stored memories for relevant context
 - memory_add: Save information to persistent memory
 - list_tools: Show available MCP tools from connected servers
@@ -112,6 +120,8 @@ TOOLS:
 
 For general questions, respond directly without tools.
 After using a tool, give a brief summary of the result.
+When a user asks to run an agent, use list_agents first if you don't know \
+the agent name/ID, then use run_agent to execute it.
 """
 
 copilot_agent = Agent(
@@ -172,6 +182,111 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
     return (
         f"Agent '{config.name}' {verb} in registry (id: {agent_id}). "
         f"Role: '{config.role}', tools: {tools_str}"
+    )
+
+
+@copilot_agent.tool
+async def list_saved_agents(
+    ctx: RunContext[StateDeps[NexusState]],
+) -> str:
+    """List all saved agents in the registry.
+
+    Returns a summary of each agent: name, role, description, and run count.
+    Use this to show the user what agents exist before running one.
+    """
+    state: NexusState = ctx.deps.state
+    state.active_panel = "agents"
+
+    agents = await list_agents(limit=50)
+    if not agents:
+        return "No agents saved in the registry yet."
+
+    lines: list[str] = []
+    for a in agents:
+        runs = a.get("total_runs", 0)
+        lines.append(
+            f"- **{a['name']}** ({a['role']}) — {a['description']} "
+            f"[{runs} runs, id: {a['id'][:8]}...]"
+        )
+    return f"Saved agents ({len(agents)}):\n" + "\n".join(lines)
+
+
+@copilot_agent.tool
+async def run_agent(
+    ctx: RunContext[StateDeps[NexusState]],
+    agent_name_or_id: str,
+    prompt: str,
+) -> str:
+    """Execute a saved agent by name or ID and return its output.
+
+    Args:
+        agent_name_or_id: The agent name or UUID to run.
+        prompt: The task or question to send to the agent.
+    """
+    import time
+
+    state: NexusState = ctx.deps.state
+
+    # Try to find the agent by ID first, then by name
+    record = await get_agent(agent_name_or_id)
+    if record is None:
+        # Search by name (case-insensitive)
+        agents = await list_agents(limit=100)
+        search = agent_name_or_id.lower()
+        record = next(
+            (a for a in agents if a["name"].lower() == search),
+            None,
+        )
+    if record is None:
+        return (
+            f"Agent '{agent_name_or_id}' not found. "
+            "Use list_agents to see available agents."
+        )
+
+    config = await agent_config_from_record(record)
+    agent_id = record["id"]
+
+    state.current_agent = AgentInfo(
+        name=config.name,
+        role=config.role,
+        model=config.role,
+        tools=[],
+        status="running",
+    )
+
+    t0 = time.monotonic()
+    try:
+        result = await run_deep_agent(config, prompt)
+    except Exception as e:
+        state.current_agent.status = "idle"
+        return f"Agent execution failed: {e}"
+
+    latency = int((time.monotonic() - t0) * 1000)
+    usage = result.get("usage", {})
+    output = result["output"]
+
+    # Save the run trace
+    await save_run(
+        agent_id=agent_id,
+        agent_name=config.name,
+        prompt=prompt,
+        output=output[:2000],
+        model=config.role,
+        role=config.role,
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        total_tokens=usage.get("total_tokens", 0),
+        latency_ms=latency,
+        source="copilot",
+    )
+
+    state.current_agent.status = "ready"
+
+    # Truncate long outputs for the chat
+    display = output if len(output) <= 2000 else output[:2000] + "\n... (truncated)"
+    tokens = usage.get("total_tokens", 0)
+    return (
+        f"**{config.name}** result ({latency}ms, {tokens} tokens):\n\n{display}"
     )
 
 
