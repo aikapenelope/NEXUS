@@ -9,8 +9,13 @@ import {
   Clock,
   Hash,
   Zap,
+  Pencil,
+  Trash2,
+  X,
+  Check,
 } from "lucide-react";
 import type { RegistryAgent } from "@/lib/types";
+import { fetchAgents, updateAgent, deleteAgent } from "@/lib/api";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -39,11 +44,8 @@ export default function AgentsPage() {
   const loadAgents = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/agents");
-      if (res.ok) {
-        const data = await res.json();
-        setAgents(data.agents);
-      }
+      const data = await fetchAgents();
+      setAgents(data);
     } catch {
       // silently fail
     } finally {
@@ -77,6 +79,20 @@ export default function AgentsPage() {
     } else {
       setExpandedId(agentId);
       void loadAgentRuns(agentId);
+    }
+  };
+
+  const handleUpdate = async (agentId: string, updates: Partial<RegistryAgent>) => {
+    const updated = await updateAgent(agentId, updates);
+    setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)));
+  };
+
+  const handleDelete = async (agentId: string) => {
+    await deleteAgent(agentId);
+    setAgents((prev) => prev.filter((a) => a.id !== agentId));
+    if (expandedId === agentId) {
+      setExpandedId(null);
+      setAgentRuns([]);
     }
   };
 
@@ -118,6 +134,8 @@ export default function AgentsPage() {
               agent={agent}
               expanded={expandedId === agent.id}
               onToggle={() => toggleExpand(agent.id)}
+              onUpdate={handleUpdate}
+              onDelete={handleDelete}
               runs={expandedId === agent.id ? agentRuns : []}
               runsLoading={runsLoading && expandedId === agent.id}
             />
@@ -128,28 +146,31 @@ export default function AgentsPage() {
   );
 }
 
-// ── Components ──────────────────────────────────────────────────────
+// ── Agent Card ──────────────────────────────────────────────────────
 
 function AgentCard({
   agent,
   expanded,
   onToggle,
+  onUpdate,
+  onDelete,
   runs,
   runsLoading,
 }: {
   agent: RegistryAgent;
   expanded: boolean;
   onToggle: () => void;
+  onUpdate: (id: string, updates: Partial<RegistryAgent>) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
   runs: RunTrace[];
   runsLoading: boolean;
 }) {
-  const enabledTools: string[] = [];
-  if (agent.include_todo) enabledTools.push("todo");
-  if (agent.include_filesystem) enabledTools.push("filesystem");
-  if (agent.include_subagents) enabledTools.push("subagents");
-  if (agent.include_skills) enabledTools.push("skills");
-  if (agent.include_memory) enabledTools.push("memory");
-  if (agent.include_web) enabledTools.push("web");
+  const [editing, setEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const enabledTools = getEnabledTools(agent);
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
@@ -197,99 +218,378 @@ function AgentCard({
       {/* Expanded detail */}
       {expanded && (
         <div className="border-t border-zinc-800 px-4 py-4 space-y-4">
-          {/* Agent info grid */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <h4 className="text-xs font-medium text-zinc-500 mb-2">Configuration</h4>
-              <div className="space-y-1.5 text-xs">
-                <InfoRow label="Role" value={agent.role} />
-                <InfoRow label="Status" value={agent.status} />
-                <InfoRow
-                  label="Token Limit"
-                  value={agent.token_limit?.toLocaleString() ?? "Default"}
-                />
-                <InfoRow
-                  label="Cost Budget"
-                  value={
-                    agent.cost_budget_usd != null
-                      ? `$${agent.cost_budget_usd.toFixed(2)}`
-                      : "Default"
+          {/* Action buttons */}
+          <div className="flex items-center gap-2">
+            {!editing && !confirmDelete && (
+              <>
+                <button
+                  onClick={() => setEditing(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 rounded-lg transition-colors"
+                >
+                  <Pencil className="w-3 h-3" />
+                  Edit
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 bg-zinc-800 border border-zinc-700 rounded-lg transition-colors"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Delete
+                </button>
+              </>
+            )}
+            {confirmDelete && (
+              <DeleteConfirm
+                agentName={agent.name}
+                deleting={deleting}
+                onConfirm={async () => {
+                  setDeleting(true);
+                  try {
+                    await onDelete(agent.id);
+                  } finally {
+                    setDeleting(false);
+                    setConfirmDelete(false);
                   }
-                />
-                <InfoRow
-                  label="Created"
-                  value={new Date(agent.created_at).toLocaleString()}
-                />
-              </div>
-            </div>
-            <div>
-              <h4 className="text-xs font-medium text-zinc-500 mb-2">Enabled Tools</h4>
-              {enabledTools.length === 0 ? (
-                <p className="text-xs text-zinc-600">No tools enabled</p>
-              ) : (
-                <div className="flex flex-wrap gap-1">
-                  {enabledTools.map((tool) => (
-                    <span
-                      key={tool}
-                      className="px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-300"
-                    >
-                      {tool}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              <h4 className="text-xs font-medium text-zinc-500 mt-4 mb-2">
-                Instructions
-              </h4>
-              <pre className="p-2 bg-zinc-950 border border-zinc-800 rounded text-xs text-zinc-400 whitespace-pre-wrap max-h-24 overflow-y-auto">
-                {agent.instructions || "(none)"}
-              </pre>
-            </div>
-          </div>
-
-          {/* Run history */}
-          <div>
-            <h4 className="text-xs font-medium text-zinc-500 mb-2">
-              Recent Runs
-            </h4>
-            {runsLoading ? (
-              <p className="text-xs text-zinc-600">Loading runs...</p>
-            ) : runs.length === 0 ? (
-              <p className="text-xs text-zinc-600">No runs recorded yet.</p>
-            ) : (
-              <div className="space-y-1">
-                {runs.map((run) => (
-                  <div
-                    key={run.id}
-                    className="flex items-center gap-4 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs"
-                  >
-                    <span className="text-zinc-500 w-32 shrink-0">
-                      {new Date(run.created_at).toLocaleString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </span>
-                    <span className="text-zinc-300 flex-1 truncate">
-                      {run.prompt.slice(0, 80)}
-                      {run.prompt.length > 80 ? "..." : ""}
-                    </span>
-                    <span className="text-zinc-400 tabular-nums">
-                      {run.total_tokens.toLocaleString()} tok
-                    </span>
-                    <span className="text-zinc-400 tabular-nums">
-                      {(run.latency_ms / 1000).toFixed(1)}s
-                    </span>
-                    <SourceBadge source={run.source} />
-                  </div>
-                ))}
-              </div>
+                }}
+                onCancel={() => setConfirmDelete(false)}
+              />
             )}
           </div>
+
+          {/* Edit form or read-only view */}
+          {editing ? (
+            <EditForm
+              agent={agent}
+              saving={saving}
+              onSave={async (updates) => {
+                setSaving(true);
+                try {
+                  await onUpdate(agent.id, updates);
+                  setEditing(false);
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              onCancel={() => setEditing(false)}
+            />
+          ) : (
+            <AgentReadView agent={agent} enabledTools={enabledTools} />
+          )}
+
+          {/* Run history */}
+          <RunHistory runs={runs} loading={runsLoading} />
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Edit Form ───────────────────────────────────────────────────────
+
+function EditForm({
+  agent,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  agent: RegistryAgent;
+  saving: boolean;
+  onSave: (updates: Partial<RegistryAgent>) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(agent.name);
+  const [description, setDescription] = useState(agent.description);
+  const [instructions, setInstructions] = useState(agent.instructions);
+  const [role, setRole] = useState(agent.role);
+  const [tools, setTools] = useState({
+    include_todo: agent.include_todo,
+    include_filesystem: agent.include_filesystem,
+    include_subagents: agent.include_subagents,
+    include_skills: agent.include_skills,
+    include_memory: agent.include_memory,
+    include_web: agent.include_web,
+  });
+
+  const toggleTool = (key: keyof typeof tools) => {
+    setTools((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleSubmit = async () => {
+    const updates: Partial<RegistryAgent> = {};
+    if (name !== agent.name) updates.name = name;
+    if (description !== agent.description) updates.description = description;
+    if (instructions !== agent.instructions) updates.instructions = instructions;
+    if (role !== agent.role) updates.role = role;
+    if (tools.include_todo !== agent.include_todo) updates.include_todo = tools.include_todo;
+    if (tools.include_filesystem !== agent.include_filesystem)
+      updates.include_filesystem = tools.include_filesystem;
+    if (tools.include_subagents !== agent.include_subagents)
+      updates.include_subagents = tools.include_subagents;
+    if (tools.include_skills !== agent.include_skills)
+      updates.include_skills = tools.include_skills;
+    if (tools.include_memory !== agent.include_memory)
+      updates.include_memory = tools.include_memory;
+    if (tools.include_web !== agent.include_web) updates.include_web = tools.include_web;
+
+    if (Object.keys(updates).length === 0) {
+      onCancel();
+      return;
+    }
+    await onSave(updates);
+  };
+
+  const toolEntries: { key: keyof typeof tools; label: string }[] = [
+    { key: "include_todo", label: "Todo" },
+    { key: "include_filesystem", label: "Filesystem" },
+    { key: "include_subagents", label: "Subagents" },
+    { key: "include_skills", label: "Skills" },
+    { key: "include_memory", label: "Memory" },
+    { key: "include_web", label: "Web" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        {/* Left column */}
+        <div className="space-y-3">
+          <FormField label="Name">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-700 rounded text-sm text-zinc-200 focus:outline-none focus:border-emerald-500"
+            />
+          </FormField>
+          <FormField label="Role">
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-700 rounded text-sm text-zinc-200 focus:outline-none focus:border-emerald-500"
+            >
+              <option value="worker">worker</option>
+              <option value="analysis">analysis</option>
+              <option value="builder">builder</option>
+            </select>
+          </FormField>
+          <FormField label="Description">
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-700 rounded text-sm text-zinc-200 focus:outline-none focus:border-emerald-500 resize-none"
+            />
+          </FormField>
+        </div>
+
+        {/* Right column */}
+        <div className="space-y-3">
+          <FormField label="Instructions">
+            <textarea
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              rows={6}
+              className="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-700 rounded text-sm text-zinc-200 focus:outline-none focus:border-emerald-500 resize-none"
+            />
+          </FormField>
+          <FormField label="Tools">
+            <div className="flex flex-wrap gap-2">
+              {toolEntries.map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => toggleTool(key)}
+                  className={`px-2 py-1 text-xs rounded border transition-colors ${
+                    tools[key]
+                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                      : "bg-zinc-800 text-zinc-500 border-zinc-700"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </FormField>
+        </div>
+      </div>
+
+      {/* Save / Cancel */}
+      <div className="flex items-center gap-2 pt-2">
+        <button
+          onClick={() => void handleSubmit()}
+          disabled={saving}
+          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-zinc-100 bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors disabled:opacity-50"
+        >
+          <Check className="w-3 h-3" />
+          {saving ? "Saving..." : "Save"}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          className="flex items-center gap-1.5 px-4 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 rounded-lg transition-colors"
+        >
+          <X className="w-3 h-3" />
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Delete Confirmation ─────────────────────────────────────────────
+
+function DeleteConfirm({
+  agentName,
+  deleting,
+  onConfirm,
+  onCancel,
+}: {
+  agentName: string;
+  deleting: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 bg-red-500/5 border border-red-500/20 rounded-lg">
+      <span className="text-xs text-red-400">
+        Delete <strong>{agentName}</strong>? This cannot be undone.
+      </span>
+      <button
+        onClick={onConfirm}
+        disabled={deleting}
+        className="px-3 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-500 rounded transition-colors disabled:opacity-50"
+      >
+        {deleting ? "Deleting..." : "Confirm"}
+      </button>
+      <button
+        onClick={onCancel}
+        disabled={deleting}
+        className="px-3 py-1 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+// ── Read-only Agent View ────────────────────────────────────────────
+
+function AgentReadView({
+  agent,
+  enabledTools,
+}: {
+  agent: RegistryAgent;
+  enabledTools: string[];
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-4">
+      <div>
+        <h4 className="text-xs font-medium text-zinc-500 mb-2">Configuration</h4>
+        <div className="space-y-1.5 text-xs">
+          <InfoRow label="Role" value={agent.role} />
+          <InfoRow label="Status" value={agent.status} />
+          <InfoRow
+            label="Token Limit"
+            value={agent.token_limit?.toLocaleString() ?? "Default"}
+          />
+          <InfoRow
+            label="Cost Budget"
+            value={
+              agent.cost_budget_usd != null
+                ? `$${agent.cost_budget_usd.toFixed(2)}`
+                : "Default"
+            }
+          />
+          <InfoRow
+            label="Created"
+            value={new Date(agent.created_at).toLocaleString()}
+          />
+        </div>
+      </div>
+      <div>
+        <h4 className="text-xs font-medium text-zinc-500 mb-2">Enabled Tools</h4>
+        {enabledTools.length === 0 ? (
+          <p className="text-xs text-zinc-600">No tools enabled</p>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {enabledTools.map((tool) => (
+              <span
+                key={tool}
+                className="px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-300"
+              >
+                {tool}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <h4 className="text-xs font-medium text-zinc-500 mt-4 mb-2">
+          Instructions
+        </h4>
+        <pre className="p-2 bg-zinc-950 border border-zinc-800 rounded text-xs text-zinc-400 whitespace-pre-wrap max-h-24 overflow-y-auto">
+          {agent.instructions || "(none)"}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+// ── Run History ─────────────────────────────────────────────────────
+
+function RunHistory({ runs, loading }: { runs: RunTrace[]; loading: boolean }) {
+  return (
+    <div>
+      <h4 className="text-xs font-medium text-zinc-500 mb-2">Recent Runs</h4>
+      {loading ? (
+        <p className="text-xs text-zinc-600">Loading runs...</p>
+      ) : runs.length === 0 ? (
+        <p className="text-xs text-zinc-600">No runs recorded yet.</p>
+      ) : (
+        <div className="space-y-1">
+          {runs.map((run) => (
+            <div
+              key={run.id}
+              className="flex items-center gap-4 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs"
+            >
+              <span className="text-zinc-500 w-32 shrink-0">
+                {new Date(run.created_at).toLocaleString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+              <span className="text-zinc-300 flex-1 truncate">
+                {run.prompt.slice(0, 80)}
+                {run.prompt.length > 80 ? "..." : ""}
+              </span>
+              <span className="text-zinc-400 tabular-nums">
+                {run.total_tokens.toLocaleString()} tok
+              </span>
+              <span className="text-zinc-400 tabular-nums">
+                {(run.latency_ms / 1000).toFixed(1)}s
+              </span>
+              <SourceBadge source={run.source} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Shared Components ───────────────────────────────────────────────
+
+function FormField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-zinc-500 mb-1">{label}</label>
+      {children}
     </div>
   );
 }
@@ -336,4 +636,17 @@ function SourceBadge({ source }: { source: string }) {
   return (
     <span className={`px-2 py-0.5 text-xs rounded border ${cls}`}>{source}</span>
   );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+function getEnabledTools(agent: RegistryAgent): string[] {
+  const tools: string[] = [];
+  if (agent.include_todo) tools.push("todo");
+  if (agent.include_filesystem) tools.push("filesystem");
+  if (agent.include_subagents) tools.push("subagents");
+  if (agent.include_skills) tools.push("skills");
+  if (agent.include_memory) tools.push("memory");
+  if (agent.include_web) tools.push("web");
+  return tools;
 }

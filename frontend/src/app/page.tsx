@@ -8,7 +8,7 @@ import { StateRenderers } from "@/components/generative-ui/StateRenderers";
 import type { NexusState } from "@/lib/types";
 
 export default function Home() {
-  const { state } = useCoAgent<NexusState>({
+  const { state, setState } = useCoAgent<NexusState>({
     name: "nexus_copilot",
     initialState: {
       current_agent: {
@@ -25,13 +25,21 @@ export default function Home() {
     },
   });
 
+  const activePanel = state?.active_panel ?? "chat";
+
+  const handlePanelChange = (panel: string) => {
+    // Toggle: clicking the active panel returns to chat (hides RightPanel)
+    const next = activePanel === panel ? "chat" : panel;
+    setState({ ...state, active_panel: next });
+  };
+
   return (
     <div className="flex h-screen bg-zinc-950">
       {/* Generative UI state renderers (invisible — inject components into chat) */}
       <StateRenderers />
 
       {/* Left sidebar */}
-      <Sidebar activePanel={state?.active_panel ?? "chat"} />
+      <Sidebar activePanel={activePanel} onPanelChange={handlePanelChange} />
 
       {/* Center: Chat */}
       <main className="flex-1 flex flex-col min-w-0">

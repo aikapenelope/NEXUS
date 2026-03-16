@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 
 interface SidebarProps {
   activePanel: string;
+  onPanelChange?: (panel: string) => void;
 }
 
 const navItems = [
@@ -16,7 +17,7 @@ const navItems = [
   { id: "tools", icon: Wrench, label: "Tools" },
 ];
 
-export function Sidebar({ activePanel }: SidebarProps) {
+export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {
   return (
     <aside className="w-16 flex flex-col items-center py-4 border-r border-zinc-800 bg-zinc-950">
       <div className="mb-6">
@@ -31,6 +32,7 @@ export function Sidebar({ activePanel }: SidebarProps) {
             <button
               key={item.id}
               title={item.label}
+              onClick={() => onPanelChange?.(item.id)}
               className={cn(
                 "w-10 h-10 rounded-lg flex items-center justify-center transition-colors",
                 activePanel === item.id
