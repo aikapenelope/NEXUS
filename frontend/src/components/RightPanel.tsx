@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Bot, Brain, Database, RefreshCw } from "lucide-react";
+import { Bot, Brain, Database, RefreshCw, Trash2 } from "lucide-react";
 import type { NexusState, RegistryAgent } from "@/lib/types";
-import { fetchAgents } from "@/lib/api";
+import { fetchAgents, deleteAgent } from "@/lib/api";
 
 interface RightPanelProps {
   state: NexusState | undefined;
@@ -49,6 +49,12 @@ function AgentPanel({ state }: { state: NexusState }) {
   useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
+
+  const handleDelete = async (agentId: string) => {
+    await deleteAgent(agentId);
+    setRegistryAgents((prev) => prev.filter((a) => a.id !== agentId));
+    if (selectedId === agentId) setSelectedId(null);
+  };
 
   const selected = registryAgents.find((a) => a.id === selectedId);
 
@@ -108,7 +114,9 @@ function AgentPanel({ state }: { state: NexusState }) {
       </div>
 
       {/* Selected agent detail */}
-      {selected && <AgentDetail agent={selected} />}
+      {selected && (
+        <AgentDetail agent={selected} onDelete={handleDelete} />
+      )}
     </div>
   );
 }
@@ -143,7 +151,16 @@ function CurrentAgentCard({ agent }: { agent: NexusState["current_agent"] }) {
   );
 }
 
-function AgentDetail({ agent }: { agent: RegistryAgent }) {
+function AgentDetail({
+  agent,
+  onDelete,
+}: {
+  agent: RegistryAgent;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   const enabledTools: string[] = [];
   if (agent.include_todo) enabledTools.push("todo");
   if (agent.include_filesystem) enabledTools.push("filesystem");
@@ -152,9 +169,51 @@ function AgentDetail({ agent }: { agent: RegistryAgent }) {
   if (agent.include_memory) enabledTools.push("memory");
   if (agent.include_web) enabledTools.push("web");
 
+  const handleConfirmDelete = async () => {
+    setDeleting(true);
+    try {
+      await onDelete(agent.id);
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  };
+
   return (
     <div className="p-3 bg-zinc-900 rounded border border-zinc-800 space-y-2">
-      <h4 className="text-sm font-medium text-zinc-200">{agent.name}</h4>
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-medium text-zinc-200">{agent.name}</h4>
+        {!confirmDelete && (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="p-1 text-zinc-500 hover:text-red-400 transition-colors"
+            title="Delete agent"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
+      {confirmDelete && (
+        <div className="flex items-center gap-2 p-2 bg-red-500/5 border border-red-500/20 rounded text-xs">
+          <span className="text-red-400 flex-1">Delete this agent?</span>
+          <button
+            onClick={() => void handleConfirmDelete()}
+            disabled={deleting}
+            className="px-2 py-0.5 text-white bg-red-600 hover:bg-red-500 rounded transition-colors disabled:opacity-50"
+          >
+            {deleting ? "..." : "Yes"}
+          </button>
+          <button
+            onClick={() => setConfirmDelete(false)}
+            disabled={deleting}
+            className="px-2 py-0.5 text-zinc-400 hover:text-zinc-200 transition-colors"
+          >
+            No
+          </button>
+        </div>
+      )}
+
       <p className="text-xs text-zinc-400">{agent.description}</p>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
