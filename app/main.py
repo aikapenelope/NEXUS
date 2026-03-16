@@ -19,9 +19,11 @@ from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
 from app.registry import (
     agent_config_from_record,
+    delete_agent,
     get_agent,
     list_agents,
     save_agent,
+    update_agent,
     update_agent_run_stats,
 )
 from app.traces import get_dashboard_stats, get_run, list_runs, save_run
@@ -120,6 +122,32 @@ class ReadinessResponse(BaseModel):
     status: str
     version: str
     checks: dict[str, str]
+
+
+class AgentUpdateRequest(BaseModel):
+    """Partial update for an agent. Only provided fields are updated."""
+
+    name: str | None = None
+    description: str | None = None
+    instructions: str | None = None
+    role: str | None = None
+    include_todo: bool | None = None
+    include_filesystem: bool | None = None
+    include_subagents: bool | None = None
+    include_skills: bool | None = None
+    include_memory: bool | None = None
+    include_web: bool | None = None
+    context_manager: bool | None = None
+    token_limit: int | None = None
+    cost_budget_usd: float | None = None
+    status: str | None = None
+
+
+class AgentDeleteResponse(BaseModel):
+    """Confirmation of agent deletion."""
+
+    deleted: bool
+    agent_id: str
 
 
 # ── Memory request / response models ────────────────────────────────
@@ -338,6 +366,44 @@ async def get_agent_endpoint(agent_id: str) -> AgentDetailResponse:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent get failed: {e}") from e
+
+
+@app.patch("/agents/{agent_id}", response_model=AgentDetailResponse)
+async def update_agent_endpoint(
+    agent_id: str, request: AgentUpdateRequest
+) -> AgentDetailResponse:
+    """Update an agent's configuration.
+
+    Only the fields provided in the request body are updated.
+    Omitted fields remain unchanged.
+    """
+    try:
+        # Build updates dict from non-None fields
+        updates = request.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        record = await update_agent(agent_id, updates)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentDetailResponse(agent=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent update failed: {e}") from e
+
+
+@app.delete("/agents/{agent_id}", response_model=AgentDeleteResponse)
+async def delete_agent_endpoint(agent_id: str) -> AgentDeleteResponse:
+    """Delete an agent from the registry."""
+    try:
+        deleted = await delete_agent(agent_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentDeleteResponse(deleted=True, agent_id=agent_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent delete failed: {e}") from e
 
 
 @app.post("/agents/{agent_id}/run", response_model=RunResponse)
