@@ -1,8 +1,8 @@
-"""Model routing for NEXUS: Haiku for smart tasks, Groq for cheap workers.
+"""Model routing for NEXUS: Haiku for smart tasks, GPT-OSS 20B for workers.
 
 API keys are read from environment variables by the provider SDKs:
   - ANTHROPIC_API_KEY for Claude models
-  - GROQ_API_KEY for Groq models
+  - GROQ_API_KEY for Groq-hosted models (GPT-OSS 20B)
 These are injected via Docker env / ESC environment at deploy time.
 """
 
@@ -20,7 +20,7 @@ def get_model_for_role(role: str) -> str:
     Roles:
         builder  -- Haiku (needs structured output, complex reasoning)
         analysis -- Haiku (synthesis, judgment)
-        worker   -- Groq  (research, extraction, cheap tasks)
+        worker   -- GPT-OSS 20B on Groq (reliable tool calling, fast, cheap)
     """
     if role in ("builder", "analysis"):
         return HAIKU_MODEL

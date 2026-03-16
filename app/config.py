@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     # ── Model routing ───────────────────────────────────────────────
     # Builder / analysis tasks use Haiku (smarter, paid)
     haiku_model: str = "anthropic:claude-haiku-4-5-20251001"
-    # Worker / cheap tasks use Groq (fast, free tier)
-    groq_model: str = "groq:llama-3.3-70b-versatile"
+    # Worker tasks use GPT-OSS 20B on Groq (reliable tool calling, ~$0.075/1M input)
+    groq_model: str = "groq:openai/gpt-oss-20b"
 
     # ── Token limits (per agent run) ────────────────────────────────
     builder_token_limit: int = 16_000
