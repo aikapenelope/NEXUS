@@ -5,8 +5,8 @@ description = "NEXUS - Self-hosted AI agent builder platform"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
-    # Agent framework
-    "pydantic-ai[groq,anthropic,mcp,logfire,ag-ui]>=1.68.0",
+    # Agent framework — extras live on pydantic-ai-slim, not the fat package
+    "pydantic-ai-slim[groq,anthropic,mcp,logfire,ag-ui]>=1.68.0",
     "pydantic-deep[web-tools]>=0.2.20",
     # API
     "fastapi>=0.115.0",
