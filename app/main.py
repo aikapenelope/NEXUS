@@ -14,6 +14,15 @@ from pydantic import BaseModel, Field
 from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_deep_agent
+from app.conversations import (
+    add_message,
+    create_conversation,
+    delete_conversation,
+    get_conversation,
+    get_messages,
+    list_conversations,
+    update_conversation_title,
+)
 from app.copilot import copilot_app
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
@@ -934,4 +943,202 @@ async def run_workflow_endpoint(
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Workflow execution failed: {e}"
+        ) from e
+
+
+# ── Conversation models ──────────────────────────────────────────────
+
+
+class ConversationCreateRequest(BaseModel):
+    """Create a new conversation."""
+
+    title: str | None = Field(default=None, description="Optional title")
+
+
+class ConversationCreateResponse(BaseModel):
+    """Response after creating a conversation."""
+
+    conversation: dict[str, Any]
+
+
+class ConversationListResponse(BaseModel):
+    """List of conversations."""
+
+    conversations: list[dict[str, Any]]
+
+
+class ConversationDetailResponse(BaseModel):
+    """Single conversation detail."""
+
+    conversation: dict[str, Any]
+
+
+class ConversationUpdateRequest(BaseModel):
+    """Update a conversation's title."""
+
+    title: str = Field(description="New title for the conversation")
+
+
+class ConversationDeleteResponse(BaseModel):
+    """Confirmation of conversation deletion."""
+
+    deleted: bool
+    conversation_id: str
+
+
+class MessageAddRequest(BaseModel):
+    """Add a message to a conversation."""
+
+    role: str = Field(description="Message role: 'user', 'assistant', or 'system'")
+    content: str = Field(description="Message text")
+
+
+class MessageAddResponse(BaseModel):
+    """Response after adding a message."""
+
+    message: dict[str, Any]
+
+
+class MessageListResponse(BaseModel):
+    """List of messages in a conversation."""
+
+    messages: list[dict[str, Any]]
+
+
+# ── Conversation endpoints ───────────────────────────────────────────
+
+
+@app.post("/conversations", response_model=ConversationCreateResponse, status_code=201)
+async def create_conversation_endpoint(
+    request: ConversationCreateRequest,
+) -> ConversationCreateResponse:
+    """Create a new conversation."""
+    try:
+        record = await create_conversation(title=request.title)
+        return ConversationCreateResponse(conversation=record)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Conversation creation failed: {e}"
+        ) from e
+
+
+@app.get("/conversations", response_model=ConversationListResponse)
+async def list_conversations_endpoint(
+    limit: int = 50,
+) -> ConversationListResponse:
+    """List conversations ordered by most recently updated."""
+    try:
+        conversations = await list_conversations(limit=limit)
+        return ConversationListResponse(conversations=conversations)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Conversation list failed: {e}"
+        ) from e
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+async def get_conversation_endpoint(
+    conversation_id: str,
+) -> ConversationDetailResponse:
+    """Get a single conversation by ID."""
+    try:
+        record = await get_conversation(conversation_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return ConversationDetailResponse(conversation=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Conversation get failed: {e}"
+        ) from e
+
+
+@app.patch("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+async def update_conversation_endpoint(
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+) -> ConversationDetailResponse:
+    """Update a conversation's title."""
+    try:
+        record = await update_conversation_title(conversation_id, request.title)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return ConversationDetailResponse(conversation=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Conversation update failed: {e}"
+        ) from e
+
+
+@app.delete("/conversations/{conversation_id}", response_model=ConversationDeleteResponse)
+async def delete_conversation_endpoint(
+    conversation_id: str,
+) -> ConversationDeleteResponse:
+    """Delete a conversation and all its messages."""
+    try:
+        deleted = await delete_conversation(conversation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return ConversationDeleteResponse(deleted=True, conversation_id=conversation_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Conversation delete failed: {e}"
+        ) from e
+
+
+@app.post(
+    "/conversations/{conversation_id}/messages",
+    response_model=MessageAddResponse,
+    status_code=201,
+)
+async def add_message_endpoint(
+    conversation_id: str,
+    request: MessageAddRequest,
+) -> MessageAddResponse:
+    """Add a message to a conversation."""
+    try:
+        # Verify conversation exists
+        conv = await get_conversation(conversation_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        record = await add_message(
+            conversation_id=conversation_id,
+            role=request.role,
+            content=request.content,
+        )
+        return MessageAddResponse(message=record)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Message add failed: {e}"
+        ) from e
+
+
+@app.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=MessageListResponse,
+)
+async def get_messages_endpoint(
+    conversation_id: str,
+    limit: int = 200,
+) -> MessageListResponse:
+    """Get messages for a conversation in chronological order."""
+    try:
+        # Verify conversation exists
+        conv = await get_conversation(conversation_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        messages = await get_messages(conversation_id, limit=limit)
+        return MessageListResponse(messages=messages)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Message list failed: {e}"
         ) from e

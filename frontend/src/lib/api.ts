@@ -207,3 +207,143 @@ export async function runWorkflow(
   }
   return res.json();
 }
+
+// ── Conversation types ──────────────────────────────────────────────
+
+export interface Conversation {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+export interface Message {
+  id: string;
+  conversation_id: string;
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+interface ConversationListResponse {
+  conversations: Conversation[];
+}
+
+interface ConversationCreateResponse {
+  conversation: Conversation;
+}
+
+interface ConversationDetailResponse {
+  conversation: Conversation;
+}
+
+interface ConversationDeleteResponse {
+  deleted: boolean;
+  conversation_id: string;
+}
+
+interface MessageListResponse {
+  messages: Message[];
+}
+
+interface MessageAddResponse {
+  message: Message;
+}
+
+// ── Conversation API functions ──────────────────────────────────────
+
+/** Fetch all conversations ordered by most recently updated. */
+export async function fetchConversations(
+  limit = 50
+): Promise<Conversation[]> {
+  const res = await fetch(`${API_BASE}/api/conversations?limit=${limit}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch conversations: ${res.status}`);
+  }
+  const data: ConversationListResponse = await res.json();
+  return data.conversations;
+}
+
+/** Create a new conversation. */
+export async function createConversationApi(
+  title?: string | null
+): Promise<Conversation> {
+  const res = await fetch(`${API_BASE}/api/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title ?? null }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create conversation: ${res.status}`);
+  }
+  const data: ConversationCreateResponse = await res.json();
+  return data.conversation;
+}
+
+/** Update a conversation's title. */
+export async function updateConversationTitle(
+  conversationId: string,
+  title: string
+): Promise<Conversation> {
+  const res = await fetch(`${API_BASE}/api/conversations/${conversationId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update conversation: ${res.status}`);
+  }
+  const data: ConversationDetailResponse = await res.json();
+  return data.conversation;
+}
+
+/** Delete a conversation and all its messages. */
+export async function deleteConversationApi(
+  conversationId: string
+): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/api/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to delete conversation: ${res.status}`);
+  }
+  const data: ConversationDeleteResponse = await res.json();
+  return data.deleted;
+}
+
+/** Add a message to a conversation. */
+export async function addMessageApi(
+  conversationId: string,
+  role: string,
+  content: string
+): Promise<Message> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${conversationId}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role, content }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to add message: ${res.status}`);
+  }
+  const data: MessageAddResponse = await res.json();
+  return data.message;
+}
+
+/** Fetch messages for a conversation in chronological order. */
+export async function fetchMessages(
+  conversationId: string,
+  limit = 200
+): Promise<Message[]> {
+  const res = await fetch(
+    `${API_BASE}/api/conversations/${conversationId}/messages?limit=${limit}`
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to fetch messages: ${res.status}`);
+  }
+  const data: MessageListResponse = await res.json();
+  return data.messages;
+}
