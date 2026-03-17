@@ -14,7 +14,9 @@ import {
   X,
   Check,
   Plus,
+  FlaskConical,
 } from "lucide-react";
+import Link from "next/link";
 import type { RegistryAgent } from "@/lib/types";
 import { fetchAgents, updateAgent, deleteAgent, createAgent } from "@/lib/api";
 import type { CreateAgentPayload } from "@/lib/api";
@@ -413,6 +415,14 @@ function AgentCard({
           <div className="flex items-center gap-2">
             {!editing && !confirmDelete && (
               <>
+                <Link
+                  href={`/dashboard/agents/${agent.id}/evals`}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-zinc-800 border border-zinc-700 rounded-lg transition-colors"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <FlaskConical className="w-3 h-3" />
+                  Evals
+                </Link>
                 <button
                   onClick={() => setEditing(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 border border-zinc-700 rounded-lg transition-colors"

@@ -1,9 +1,18 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Bot, Brain, Database, RefreshCw, Trash2, Activity } from "lucide-react";
+import {
+  Bot,
+  Brain,
+  Database,
+  RefreshCw,
+  Trash2,
+  Activity,
+  Wrench,
+  Check,
+} from "lucide-react";
 import type { NexusState, RegistryAgent, AgentActivity } from "@/lib/types";
-import { fetchAgents, deleteAgent } from "@/lib/api";
+import { fetchAgents, deleteAgent, fetchTools, type ToolInfo } from "@/lib/api";
 
 interface RightPanelProps {
   state: NexusState | undefined;
@@ -21,6 +30,7 @@ export function RightPanel({ state }: RightPanelProps) {
         {panel === "agents" && <AgentPanel state={state} />}
         {panel === "cerebro" && <CerebroPanel state={state} />}
         {panel === "memory" && <MemoryPanel state={state} />}
+        {panel === "tools" && <ToolsPanel />}
         {panel === "activity" && <ActivityFeedPanel state={state} />}
       </div>
     </aside>
@@ -329,6 +339,105 @@ function MemoryPanel({ state }: { state: NexusState }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Tools Panel ─────────────────────────────────────────────────────
+
+function ToolsPanel() {
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadTools = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchTools();
+      setTools(data);
+    } catch {
+      // silently fail
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTools();
+  }, [loadTools]);
+
+  const readyCount = tools.filter((t) => t.configured && t.enabled).length;
+
+  // Group by category
+  const categories: Record<string, ToolInfo[]> = {};
+  for (const t of tools) {
+    (categories[t.category] ??= []).push(t);
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+          <Wrench className="w-4 h-4" /> Tools ({readyCount}/{tools.length})
+        </h3>
+        <button
+          onClick={() => void loadTools()}
+          disabled={loading}
+          className="p-1 text-zinc-500 hover:text-zinc-300 transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw
+            className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`}
+          />
+        </button>
+      </div>
+
+      {loading && tools.length === 0 ? (
+        <p className="text-zinc-500 text-xs">Loading tools...</p>
+      ) : tools.length === 0 ? (
+        <p className="text-zinc-500 text-xs">
+          No tools available. Configure them in the dashboard.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {Object.entries(categories)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([cat, catTools]) => (
+              <div key={cat}>
+                <h4 className="text-xs font-medium text-zinc-500 mb-1">
+                  {cat}
+                </h4>
+                <div className="space-y-1">
+                  {catTools.map((t) => {
+                    const isReady = t.configured && t.enabled;
+                    return (
+                      <div
+                        key={t.id}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded border text-xs ${
+                          isReady
+                            ? "border-emerald-500/20 bg-emerald-500/5"
+                            : "border-zinc-800 bg-zinc-900"
+                        }`}
+                      >
+                        {isReady ? (
+                          <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+                        ) : (
+                          <Wrench className="w-3 h-3 text-zinc-600 shrink-0" />
+                        )}
+                        <span
+                          className={`truncate ${
+                            isReady ? "text-zinc-200" : "text-zinc-500"
+                          }`}
+                        >
+                          {t.name}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }
