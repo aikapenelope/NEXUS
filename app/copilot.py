@@ -14,6 +14,7 @@ from pydantic_ai.ag_ui import AGUIApp, StateDeps
 
 from app.agents.builder import build_agent_from_description
 from app.agents.factory import AgentConfig, run_deep_agent
+from app.events import emit_event
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, search_memory
 from app.registry import (
@@ -54,19 +55,81 @@ class MemoryEntry(BaseModel):
     score: float = 0.0
 
 
+class AgentActivity(BaseModel):
+    """A single event in the agent activity feed."""
+
+    timestamp: str = ""
+    agent_name: str = ""
+    event_type: str = "info"  # start, tool_call, complete, error
+    detail: str = ""
+    tokens: int = 0
+    latency_ms: int = 0
+
+
 class NexusState(BaseModel):
     """Shared state between the NEXUS copilot agent and the CopilotKit frontend.
 
     This state is streamed in real-time via AG-UI protocol, allowing the
     frontend to render Generative UI components (AgentCard, CerebroPipelineView,
-    MemoryList) based on the current state.
+    MemoryList, ActivityFeed) based on the current state.
     """
 
     current_agent: AgentInfo = AgentInfo()
     cerebro_stages: list[CerebroStage] = []
     memories: list[MemoryEntry] = []
+    activity_log: list[AgentActivity] = []
     active_panel: str = "chat"
     last_agent_config: dict[str, Any] = {}
+
+
+# ── Activity log helper ──────────────────────────────────────────────
+
+_MAX_ACTIVITY_LOG = 50  # Keep last N events in the streamed state
+
+
+async def _log_activity(
+    state: NexusState,
+    *,
+    agent_name: str,
+    event_type: str,
+    detail: str = "",
+    tokens: int = 0,
+    latency_ms: int = 0,
+    run_id: str | None = None,
+) -> None:
+    """Append an event to the activity log and persist it to the database.
+
+    Keeps the in-memory log bounded to _MAX_ACTIVITY_LOG entries so the
+    AG-UI state payload stays small.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    entry = AgentActivity(
+        timestamp=now,
+        agent_name=agent_name,
+        event_type=event_type,
+        detail=detail,
+        tokens=tokens,
+        latency_ms=latency_ms,
+    )
+    state.activity_log.append(entry)
+    # Trim to keep only the most recent events
+    if len(state.activity_log) > _MAX_ACTIVITY_LOG:
+        state.activity_log = state.activity_log[-_MAX_ACTIVITY_LOG:]
+
+    # Persist to DB (best-effort, don't block on failure)
+    try:
+        await emit_event(
+            agent_name=agent_name,
+            event_type=event_type,
+            detail=detail,
+            run_id=run_id,
+            tokens=tokens,
+            latency_ms=latency_ms,
+        )
+    except Exception:
+        pass  # Event persistence is best-effort
 
 
 # ── Copilot agent ────────────────────────────────────────────────────
@@ -188,6 +251,15 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
 
     tools_str = ", ".join(enabled_tools) or "none"
     verb = "updated" if action == "updated" else "created"
+
+    # Emit build event
+    await _log_activity(
+        state,
+        agent_name=config.name,
+        event_type="complete",
+        detail=f"Agent {verb} with tools: {tools_str}",
+    )
+
     return (
         f"Agent '{config.name}' {verb} in registry (id: {agent_id}). "
         f"Role: '{config.role}', tools: {tools_str}"
@@ -263,19 +335,37 @@ async def run_agent(
         status="running",
     )
 
+    # Emit start event
+    prompt_preview = prompt[:80] + "..." if len(prompt) > 80 else prompt
+    await _log_activity(
+        state,
+        agent_name=config.name,
+        event_type="start",
+        detail=f'Running with prompt: "{prompt_preview}"',
+    )
+
     t0 = time.monotonic()
     try:
         result = await run_deep_agent(config, prompt)
     except Exception as e:
+        latency_err = int((time.monotonic() - t0) * 1000)
         state.current_agent.status = "idle"
+        await _log_activity(
+            state,
+            agent_name=config.name,
+            event_type="error",
+            detail=str(e)[:200],
+            latency_ms=latency_err,
+        )
         return f"Agent execution failed: {e}"
 
     latency = int((time.monotonic() - t0) * 1000)
     usage = result.get("usage", {})
     output = result["output"]
+    total_tokens = usage.get("total_tokens", 0)
 
     # Save the run trace
-    await save_run(
+    run_record = await save_run(
         agent_id=agent_id,
         agent_name=config.name,
         prompt=prompt,
@@ -284,18 +374,28 @@ async def run_agent(
         role=config.role,
         input_tokens=usage.get("input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
-        total_tokens=usage.get("total_tokens", 0),
+        total_tokens=total_tokens,
         latency_ms=latency,
         source="copilot",
+    )
+
+    # Emit complete event
+    await _log_activity(
+        state,
+        agent_name=config.name,
+        event_type="complete",
+        detail=f"Completed in {latency}ms",
+        tokens=total_tokens,
+        latency_ms=latency,
+        run_id=run_record.get("id"),
     )
 
     state.current_agent.status = "ready"
 
     # Truncate long outputs for the chat
     display = output if len(output) <= 2000 else output[:2000] + "\n... (truncated)"
-    tokens = usage.get("total_tokens", 0)
     return (
-        f"**{config.name}** result ({latency}ms, {tokens} tokens):\n\n{display}"
+        f"**{config.name}** result ({latency}ms, {total_tokens} tokens):\n\n{display}"
     )
 
 
@@ -453,14 +553,68 @@ async def execute_workflow(
             f"Available workflows: {available}"
         )
 
+    state: NexusState = ctx.deps.state
+    wf_name = record.get("name", workflow_name_or_id)
+
+    # Emit workflow start event
+    await _log_activity(
+        state,
+        agent_name=f"workflow:{wf_name}",
+        event_type="start",
+        detail=f'Workflow started with input: "{input_text[:80]}"',
+    )
+
     t0 = time.monotonic()
     try:
         result = await run_workflow(record["id"], input_text)
     except Exception as e:
+        latency_err = int((time.monotonic() - t0) * 1000)
+        await _log_activity(
+            state,
+            agent_name=f"workflow:{wf_name}",
+            event_type="error",
+            detail=str(e)[:200],
+            latency_ms=latency_err,
+        )
         return f"Workflow execution failed: {e}"
 
     latency = int((time.monotonic() - t0) * 1000)
     total_tokens = sum(s.get("tokens", 0) for s in result["steps"])
+    status = result.get("status", "completed")
+
+    if status == "awaiting_approval":
+        # Workflow paused for human approval
+        pending_step = result.get("pending_step", "?")
+        await _log_activity(
+            state,
+            agent_name=f"workflow:{wf_name}",
+            event_type="info",
+            detail=f"Paused at step {pending_step} — awaiting approval",
+            tokens=total_tokens,
+            latency_ms=latency,
+        )
+        final = result["final_output"]
+        if len(final) > 2000:
+            final = final[:2000] + "\n... (truncated)"
+        return (
+            f"**{result['workflow_name']}** paused at step {pending_step} "
+            f"({result['total_steps']} steps completed, {latency}ms, "
+            f"{total_tokens} tokens).\n\n"
+            f"**Last output:**\n{final}\n\n"
+            f"The workflow requires your approval to continue. "
+            f"Use the Approve or Reject buttons in the workflow panel."
+        )
+
+    # Emit workflow complete event
+    await _log_activity(
+        state,
+        agent_name=f"workflow:{wf_name}",
+        event_type="complete",
+        detail=f"Completed {result['total_steps']} steps in {latency}ms",
+        tokens=total_tokens,
+        latency_ms=latency,
+    )
+
     final = result["final_output"]
     if len(final) > 2000:
         final = final[:2000] + "\n... (truncated)"

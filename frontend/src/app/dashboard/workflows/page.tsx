@@ -20,6 +20,8 @@ import {
   createWorkflow,
   deleteWorkflow,
   runWorkflow,
+  approveWorkflow,
+  rejectWorkflow,
   fetchAgents,
 } from "@/lib/api";
 import type {
@@ -29,6 +31,7 @@ import type {
   WorkflowRunResult,
 } from "@/lib/api";
 import type { RegistryAgent } from "@/lib/types";
+import { WorkflowCanvas } from "@/components/workflow/WorkflowCanvas";
 
 // ── Page ────────────────────────────────────────────────────────────
 
@@ -166,15 +169,16 @@ function CreateWorkflowForm({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [steps, setSteps] = useState<WorkflowStep[]>([
-    { agent_name: "", prompt_template: "{input}" },
+    { agent_name: "", prompt_template: "{input}", requires_approval: false },
   ]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"form" | "visual">("form");
 
   const addStep = () => {
     setSteps((prev) => [
       ...prev,
-      { agent_name: "", prompt_template: "{input}" },
+      { agent_name: "", prompt_template: "{input}", requires_approval: false },
     ]);
   };
 
@@ -186,7 +190,7 @@ function CreateWorkflowForm({
   const updateStep = (
     index: number,
     field: keyof WorkflowStep,
-    value: string
+    value: string | boolean
   ) => {
     setSteps((prev) =>
       prev.map((s, i) => (i === index ? { ...s, [field]: value } : s))
@@ -222,10 +226,34 @@ function CreateWorkflowForm({
 
   return (
     <div className="bg-zinc-900 border border-emerald-500/30 rounded-xl p-4 space-y-4">
-      <h3 className="text-sm font-medium text-zinc-200 flex items-center gap-2">
-        <Plus className="w-4 h-4 text-emerald-400" />
-        Create New Workflow
-      </h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-zinc-200 flex items-center gap-2">
+          <Plus className="w-4 h-4 text-emerald-400" />
+          Create New Workflow
+        </h3>
+        <div className="flex items-center gap-1 bg-zinc-950 rounded-lg p-0.5 border border-zinc-800">
+          <button
+            onClick={() => setMode("form")}
+            className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+              mode === "form"
+                ? "bg-zinc-800 text-zinc-200"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Form
+          </button>
+          <button
+            onClick={() => setMode("visual")}
+            className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+              mode === "visual"
+                ? "bg-zinc-800 text-zinc-200"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Visual
+          </button>
+        </div>
+      </div>
 
       {error && (
         <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
@@ -254,7 +282,21 @@ function CreateWorkflowForm({
         </FormField>
       </div>
 
-      {/* Steps */}
+      {/* Visual mode */}
+      {mode === "visual" && (
+        <div className="h-[400px]">
+          <WorkflowCanvas
+            agents={agents}
+            initialSteps={
+              steps.some((s) => s.agent_name) ? steps : undefined
+            }
+            onSave={(newSteps) => setSteps(newSteps)}
+          />
+        </div>
+      )}
+
+      {/* Form mode: Steps */}
+      {mode === "form" && (
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <label className="text-xs font-medium text-zinc-500">
@@ -298,6 +340,19 @@ function CreateWorkflowForm({
                 placeholder="Prompt template (use {input} for previous output)"
                 className="w-full px-2 py-1.5 bg-zinc-900 border border-zinc-700 rounded text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500"
               />
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={step.requires_approval ?? false}
+                  onChange={(e) =>
+                    updateStep(i, "requires_approval", e.target.checked)
+                  }
+                  className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-900 text-amber-500 focus:ring-amber-500"
+                />
+                <span className="text-xs text-amber-400">
+                  Require approval before next step
+                </span>
+              </label>
             </div>
             {steps.length > 1 && (
               <button
@@ -310,6 +365,7 @@ function CreateWorkflowForm({
           </div>
         ))}
       </div>
+      )}
 
       {/* Actions */}
       <div className="flex items-center gap-2 pt-2">
@@ -356,6 +412,10 @@ function WorkflowCard({
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<WorkflowRunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+
+  const isAwaitingApproval = workflow.status === "awaiting_approval";
 
   const handleRun = async () => {
     if (!runInput.trim()) return;
@@ -372,6 +432,38 @@ function WorkflowCard({
       );
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    setApproving(true);
+    setRunError(null);
+    try {
+      const result = await approveWorkflow(workflow.id);
+      setRunResult(result);
+      onRunComplete();
+    } catch (err) {
+      setRunError(
+        err instanceof Error ? err.message : "Approval failed"
+      );
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const handleReject = async () => {
+    setRejecting(true);
+    setRunError(null);
+    try {
+      const result = await rejectWorkflow(workflow.id);
+      setRunResult(result);
+      onRunComplete();
+    } catch (err) {
+      setRunError(
+        err instanceof Error ? err.message : "Rejection failed"
+      );
+    } finally {
+      setRejecting(false);
     }
   };
 
@@ -403,6 +495,11 @@ function WorkflowCard({
             <span className="px-1.5 py-0.5 text-xs rounded border bg-zinc-800 text-zinc-400 border-zinc-700">
               {steps.length} step{steps.length !== 1 ? "s" : ""}
             </span>
+            {isAwaitingApproval && (
+              <span className="px-1.5 py-0.5 text-xs rounded border bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse">
+                Awaiting Approval
+              </span>
+            )}
           </div>
           <p className="text-xs text-zinc-500 mt-0.5 truncate">
             {workflow.description || "No description"}
@@ -426,13 +523,54 @@ function WorkflowCard({
       {/* Expanded detail */}
       {expanded && (
         <div className="border-t border-zinc-800 px-4 py-4 space-y-4">
+          {/* Approval banner */}
+          {isAwaitingApproval && (
+            <div className="flex items-center gap-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+              <span className="text-xs text-amber-400 flex-1">
+                This workflow is paused and awaiting your approval to
+                continue.
+              </span>
+              <button
+                onClick={() => void handleApprove()}
+                disabled={approving || rejecting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-100 bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {approving ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Check className="w-3 h-3" />
+                )}
+                {approving ? "Approving..." : "Approve"}
+              </button>
+              <button
+                onClick={() => void handleReject()}
+                disabled={approving || rejecting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-400 hover:text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {rejecting ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <X className="w-3 h-3" />
+                )}
+                {rejecting ? "Rejecting..." : "Reject"}
+              </button>
+            </div>
+          )}
+
+          {runError && (
+            <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
+              {runError}
+            </div>
+          )}
+
           {/* Action buttons */}
           <div className="flex items-center gap-2">
             {!confirmDelete && (
               <>
                 <button
                   onClick={() => setShowRun(!showRun)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg transition-colors"
+                  disabled={isAwaitingApproval}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg transition-colors disabled:opacity-50"
                 >
                   <Play className="w-3 h-3" />
                   Run
@@ -495,6 +633,11 @@ function WorkflowCard({
                     <span className="text-xs text-zinc-600 ml-2">
                       {step.prompt_template}
                     </span>
+                    {step.requires_approval && (
+                      <span className="ml-2 px-1.5 py-0.5 text-xs rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        approval
+                      </span>
+                    )}
                   </div>
                   {i < steps.length - 1 && (
                     <span className="text-zinc-600 text-xs">→</span>
@@ -541,7 +684,28 @@ function WorkflowCard({
                 </div>
               )}
 
-              {runResult && <RunResultView result={runResult} />}
+              {runResult && (
+                <>
+                  <RunResultView result={runResult} />
+                  {/* Execution visualization */}
+                  <div className="h-[300px] mt-3">
+                    <WorkflowCanvas
+                      agents={[]}
+                      initialSteps={steps}
+                      readOnly
+                      executionStatus={Object.fromEntries(
+                        runResult.steps.map((s) => [
+                          s.step,
+                          runResult.status === "awaiting_approval" &&
+                          s.step === runResult.steps.length - 1
+                            ? ("complete" as const)
+                            : ("complete" as const),
+                        ])
+                      )}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -553,9 +717,24 @@ function WorkflowCard({
 // ── Run Result View ─────────────────────────────────────────────────
 
 function RunResultView({ result }: { result: WorkflowRunResult }) {
+  const status = result.status ?? "completed";
+  const statusColor =
+    status === "awaiting_approval"
+      ? "text-amber-400"
+      : status === "rejected"
+        ? "text-red-400"
+        : "text-emerald-400";
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-4 text-xs text-zinc-400">
+        <span className={statusColor}>
+          {status === "awaiting_approval"
+            ? "Paused"
+            : status === "rejected"
+              ? "Rejected"
+              : "Completed"}
+        </span>
         <span>
           {result.total_steps} step{result.total_steps !== 1 ? "s" : ""}{" "}
           completed

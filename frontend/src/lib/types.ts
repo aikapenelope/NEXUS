@@ -20,10 +20,20 @@ export interface MemoryEntry {
   score: number;
 }
 
+export interface AgentActivity {
+  timestamp: string;
+  agent_name: string;
+  event_type: "start" | "tool_call" | "complete" | "error" | "info";
+  detail: string;
+  tokens: number;
+  latency_ms: number;
+}
+
 export interface NexusState {
   current_agent: AgentInfo;
   cerebro_stages: CerebroStage[];
   memories: MemoryEntry[];
+  activity_log: AgentActivity[];
   active_panel: string;
   last_agent_config: Record<string, unknown>;
 }

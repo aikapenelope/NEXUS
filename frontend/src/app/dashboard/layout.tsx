@@ -8,6 +8,8 @@ import {
   List,
   ArrowLeft,
   GitBranch,
+  Wrench,
+  Activity,
 } from "lucide-react";
 
 const navItems = [
@@ -15,6 +17,8 @@ const navItems = [
   { href: "/dashboard/traces", icon: List, label: "Traces" },
   { href: "/dashboard/agents", icon: Bot, label: "Agents" },
   { href: "/dashboard/workflows", icon: GitBranch, label: "Workflows" },
+  { href: "/dashboard/tools", icon: Wrench, label: "Tools" },
+  { href: "/dashboard/monitor", icon: Activity, label: "Monitor" },
 ];
 
 export default function DashboardLayout({
