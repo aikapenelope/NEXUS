@@ -23,6 +23,7 @@ from app.registry import (
     save_agent,
 )
 from app.traces import save_run
+from app.workflows import list_workflows, run_workflow, save_workflow
 
 # ── Shared state (synced to frontend via AG-UI) ─────────────────────
 
@@ -113,10 +114,18 @@ TOOLS:
 - build_agent: Create an AI agent (ONLY after discovery + confirmation)
 - list_agents: List all saved agents in the registry (use to show what exists)
 - run_agent: Execute a saved agent by name or ID with a prompt, returns the result
+- create_workflow: Create a sequential pipeline of agents (chain agent A -> B -> C)
+- run_workflow: Execute a saved workflow with an initial input
 - memory_search: Search stored memories for relevant context
 - memory_add: Save information to persistent memory
 - list_tools: Show available MCP tools from connected servers
 - browse_web: Browse a web page and extract content
+
+WORKFLOWS:
+Workflows chain multiple agents in sequence. Each step's output becomes the \
+next step's input via the {input} placeholder in the prompt template. \
+When a user wants to chain agents or create a pipeline, use create_workflow. \
+When they want to run an existing workflow, use run_workflow.
 
 For general questions, respond directly without tools.
 After using a tool, give a brief summary of the result.
@@ -367,6 +376,100 @@ async def list_tools(
         else:
             parts.append(f"**{name}**: unavailable or no tools")
     return "Connected MCP servers:\n\n" + "\n\n".join(parts)
+
+
+@copilot_agent.tool
+async def create_workflow(
+    ctx: RunContext[StateDeps[NexusState]],
+    name: str,
+    description: str,
+    steps: list[dict[str, str]],
+) -> str:
+    """Create a sequential workflow that chains multiple agents.
+
+    Args:
+        name: Short identifier for the workflow (e.g. "research-summarize").
+        description: What the workflow does, in one sentence.
+        steps: Ordered list of steps. Each step is a dict with "agent_name"
+               (name of a saved agent) and "prompt_template" (prompt with
+               {input} placeholder for the previous step's output).
+    """
+    if not steps:
+        return "Error: at least one step is required."
+
+    # Validate step structure
+    validated_steps: list[dict[str, str]] = []
+    for i, step in enumerate(steps):
+        agent_name = step.get("agent_name", "")
+        if not agent_name:
+            return f"Error: step {i} is missing 'agent_name'."
+        template = step.get("prompt_template", "{input}")
+        validated_steps.append(
+            {"agent_name": agent_name, "prompt_template": template}
+        )
+
+    record = await save_workflow(
+        name=name,
+        description=description,
+        steps=validated_steps,
+    )
+    wf_id = record["id"]
+    step_names = [s["agent_name"] for s in validated_steps]
+    return (
+        f"Workflow '{name}' created (id: {wf_id}). "
+        f"Pipeline: {' → '.join(step_names)} ({len(validated_steps)} steps)"
+    )
+
+
+@copilot_agent.tool
+async def execute_workflow(
+    ctx: RunContext[StateDeps[NexusState]],
+    workflow_name_or_id: str,
+    input_text: str,
+) -> str:
+    """Execute a saved workflow with an initial input.
+
+    The workflow runs each agent step sequentially, passing each output
+    as the next step's input.
+
+    Args:
+        workflow_name_or_id: The workflow name or UUID to run.
+        input_text: The starting prompt for the first agent in the pipeline.
+    """
+    import time
+
+    # Find workflow by ID or name
+    workflows = await list_workflows(limit=100)
+    record = None
+    for w in workflows:
+        if w["id"] == workflow_name_or_id or w["name"].lower() == workflow_name_or_id.lower():
+            record = w
+            break
+
+    if record is None:
+        available = ", ".join(w["name"] for w in workflows) if workflows else "none"
+        return (
+            f"Workflow '{workflow_name_or_id}' not found. "
+            f"Available workflows: {available}"
+        )
+
+    t0 = time.monotonic()
+    try:
+        result = await run_workflow(record["id"], input_text)
+    except Exception as e:
+        return f"Workflow execution failed: {e}"
+
+    latency = int((time.monotonic() - t0) * 1000)
+    total_tokens = sum(s.get("tokens", 0) for s in result["steps"])
+    final = result["final_output"]
+    if len(final) > 2000:
+        final = final[:2000] + "\n... (truncated)"
+
+    return (
+        f"**{result['workflow_name']}** completed "
+        f"({result['total_steps']} steps, {latency}ms, {total_tokens} tokens):\n\n"
+        f"{final}"
+    )
 
 
 @copilot_agent.tool

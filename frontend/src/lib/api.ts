@@ -98,3 +98,112 @@ export async function deleteAgent(agentId: string): Promise<boolean> {
   const data: AgentDeleteResponse = await res.json();
   return data.deleted;
 }
+
+// ── Workflow types ──────────────────────────────────────────────────
+
+export interface WorkflowStep {
+  agent_name: string;
+  prompt_template: string;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+  status: string;
+  total_runs: number;
+  created_at: string;
+  last_run_at: string | null;
+}
+
+export interface CreateWorkflowPayload {
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+}
+
+interface WorkflowListResponse {
+  workflows: Workflow[];
+}
+
+interface WorkflowCreateResponse {
+  workflow: Workflow;
+}
+
+interface WorkflowDeleteResponse {
+  deleted: boolean;
+  workflow_id: string;
+}
+
+export interface WorkflowRunResult {
+  workflow_id: string;
+  workflow_name: string;
+  steps: {
+    step: number;
+    agent_name: string;
+    agent_id: string;
+    prompt: string;
+    output: string;
+    latency_ms: number;
+    tokens: number;
+  }[];
+  final_output: string;
+  total_steps: number;
+}
+
+// ── Workflow API functions ───────────────────────────────────────────
+
+/** Fetch all workflows. */
+export async function fetchWorkflows(): Promise<Workflow[]> {
+  const res = await fetch(`${API_BASE}/api/workflows`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch workflows: ${res.status}`);
+  }
+  const data: WorkflowListResponse = await res.json();
+  return data.workflows;
+}
+
+/** Create a new workflow. */
+export async function createWorkflow(
+  payload: CreateWorkflowPayload
+): Promise<Workflow> {
+  const res = await fetch(`${API_BASE}/api/workflows`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to create workflow: ${res.status}`);
+  }
+  const data: WorkflowCreateResponse = await res.json();
+  return data.workflow;
+}
+
+/** Delete a workflow. */
+export async function deleteWorkflow(workflowId: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/api/workflows/${workflowId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to delete workflow: ${res.status}`);
+  }
+  const data: WorkflowDeleteResponse = await res.json();
+  return data.deleted;
+}
+
+/** Run a workflow with an initial input. */
+export async function runWorkflow(
+  workflowId: string,
+  input: string
+): Promise<WorkflowRunResult> {
+  const res = await fetch(`${API_BASE}/api/workflows/${workflowId}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ input }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to run workflow: ${res.status}`);
+  }
+  return res.json();
+}

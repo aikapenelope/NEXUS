@@ -64,6 +64,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ── Rate limiting middleware ─────────────────────────────────────────
+# Applies a sliding-window rate limit (30 req/min by default) to
+# expensive endpoints (agent runs, builds, cerebro, workflows).
+# Health checks and static reads are exempt.
+
+_RATE_LIMITED_PREFIXES = ("/agents/build", "/agents/run", "/cerebro/", "/workflows/")
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Any, call_next: Any) -> Any:
+    """Check rate limit for expensive endpoints."""
+    from starlette.responses import JSONResponse
+
+    path = request.url.path
+    # Only rate-limit write/compute-heavy endpoints
+    if request.method == "POST" and any(path.startswith(p) for p in _RATE_LIMITED_PREFIXES):
+        from app.cache import check_rate_limit
+
+        client_ip = request.client.host if request.client else "unknown"
+        allowed, remaining = await check_rate_limit(f"ip:{client_ip}")
+        if not allowed:
+            return JSONResponse(
+                {"detail": "Rate limit exceeded. Try again in a minute."},
+                status_code=429,
+                headers={"X-RateLimit-Remaining": str(remaining)},
+            )
+        response = await call_next(request)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        return response
+
+    return await call_next(request)
+
 # ── AG-UI Copilot endpoint ───────────────────────────────────────────
 # Mount the AG-UI app at /api/copilot for CopilotKit frontend integration.
 app.mount("/api/copilot", copilot_app)
