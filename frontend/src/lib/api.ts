@@ -594,6 +594,49 @@ export async function fetchEvals(agentId: string): Promise<EvalRecord[]> {
   return data.evaluations;
 }
 
+/** List all evaluations across all agents. */
+export async function fetchAllEvals(options?: {
+  limit?: number;
+  agentId?: string;
+}): Promise<EvalRecord[]> {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (options?.agentId) params.set("agent_id", options.agentId);
+  const qs = params.toString();
+  const res = await fetch(`${API_BASE}/api/evals${qs ? `?${qs}` : ""}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch all evals: ${res.status}`);
+  }
+  const data: EvalListResponse = await res.json();
+  return data.evaluations;
+}
+
+export interface EvalsSummaryAgent {
+  agent_id: string;
+  agent_name: string;
+  eval_count: number;
+  avg_score: number;
+  avg_pass_rate: number;
+  last_eval_at: string | null;
+}
+
+export interface EvalsSummary {
+  total_evals: number;
+  completed: number;
+  running: number;
+  agents: EvalsSummaryAgent[];
+}
+
+/** Get aggregate eval statistics. */
+export async function fetchEvalsSummary(): Promise<EvalsSummary> {
+  const res = await fetch(`${API_BASE}/api/evals/summary`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch eval summary: ${res.status}`);
+  }
+  const data: { summary: EvalsSummary } = await res.json();
+  return data.summary;
+}
+
 // ── Events API ──────────────────────────────────────────────────────
 
 interface EventListResponse {

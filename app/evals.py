@@ -256,3 +256,92 @@ async def get_eval(eval_id: str) -> dict[str, Any] | None:
             uuid.UUID(eval_id),
         )
     return _row_to_dict(row) if row else None
+
+
+async def list_all_evals(
+    limit: int = 50, agent_id: str | None = None
+) -> list[dict[str, Any]]:
+    """List evaluations across all agents, newest first.
+
+    Optionally filter by agent_id.
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        if agent_id:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM nexus_evals
+                WHERE agent_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                uuid.UUID(agent_id),
+                limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM nexus_evals
+                ORDER BY created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+    return [_row_to_dict(r) for r in rows]
+
+
+async def get_evals_summary() -> dict[str, Any]:
+    """Aggregate eval statistics across all agents."""
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        # Global stats
+        global_row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) AS total_evals,
+                COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+                COUNT(*) FILTER (WHERE status = 'running') AS running
+            FROM nexus_evals
+            """
+        )
+
+        # Per-agent breakdown
+        agent_rows = await conn.fetch(
+            """
+            SELECT
+                agent_id,
+                agent_name,
+                COUNT(*) AS eval_count,
+                AVG((scores->>'avg_score')::float)
+                    FILTER (WHERE status = 'completed') AS avg_score,
+                AVG((scores->>'pass_rate')::float)
+                    FILTER (WHERE status = 'completed') AS avg_pass_rate,
+                MAX(created_at) AS last_eval_at
+            FROM nexus_evals
+            GROUP BY agent_id, agent_name
+            ORDER BY last_eval_at DESC
+            """
+        )
+
+    agents: list[dict[str, Any]] = []
+    for r in agent_rows:
+        agents.append({
+            "agent_id": str(r["agent_id"]),
+            "agent_name": r["agent_name"],
+            "eval_count": r["eval_count"],
+            "avg_score": round(float(r["avg_score"] or 0), 3),
+            "avg_pass_rate": round(float(r["avg_pass_rate"] or 0), 1),
+            "last_eval_at": (
+                r["last_eval_at"].isoformat()
+                if r["last_eval_at"]
+                else None
+            ),
+        })
+
+    assert global_row is not None
+    return {
+        "total_evals": global_row["total_evals"],
+        "completed": global_row["completed"],
+        "running": global_row["running"],
+        "agents": agents,
+    }

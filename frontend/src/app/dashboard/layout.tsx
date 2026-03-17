@@ -10,12 +10,14 @@ import {
   GitBranch,
   Wrench,
   Activity,
+  FlaskConical,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", icon: BarChart3, label: "Overview" },
   { href: "/dashboard/traces", icon: List, label: "Traces" },
   { href: "/dashboard/agents", icon: Bot, label: "Agents" },
+  { href: "/dashboard/evals", icon: FlaskConical, label: "Evals" },
   { href: "/dashboard/workflows", icon: GitBranch, label: "Workflows" },
   { href: "/dashboard/tools", icon: Wrench, label: "Tools" },
   { href: "/dashboard/monitor", icon: Activity, label: "Monitor" },

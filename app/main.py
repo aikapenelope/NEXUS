@@ -24,7 +24,13 @@ from app.conversations import (
     update_conversation_title,
 )
 from app.copilot import copilot_app
-from app.evals import EVALUATORS, list_evals, run_eval
+from app.evals import (
+    EVALUATORS,
+    get_evals_summary,
+    list_all_evals,
+    list_evals,
+    run_eval,
+)
 from app.events import get_event_stats, list_events
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
@@ -874,6 +880,45 @@ async def list_evals_endpoint(
 async def list_evaluators_endpoint() -> EvaluatorsResponse:
     """List available evaluator types."""
     return EvaluatorsResponse(evaluators=EVALUATORS)
+
+
+class AllEvalsResponse(BaseModel):
+    """All evaluations across agents."""
+
+    evaluations: list[dict[str, Any]]
+
+
+class EvalsSummaryResponse(BaseModel):
+    """Aggregate eval statistics."""
+
+    summary: dict[str, Any]
+
+
+@app.get("/evals", response_model=AllEvalsResponse)
+async def list_all_evals_endpoint(
+    limit: int = 50,
+    agent_id: str | None = None,
+) -> AllEvalsResponse:
+    """List evaluations across all agents, newest first."""
+    try:
+        evals = await list_all_evals(limit=limit, agent_id=agent_id)
+        return AllEvalsResponse(evaluations=evals)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list evals: {e}"
+        ) from e
+
+
+@app.get("/evals/summary", response_model=EvalsSummaryResponse)
+async def evals_summary_endpoint() -> EvalsSummaryResponse:
+    """Aggregate eval statistics across all agents."""
+    try:
+        summary = await get_evals_summary()
+        return EvalsSummaryResponse(summary=summary)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get eval summary: {e}"
+        ) from e
 
 
 # ── Memory endpoints ─────────────────────────────────────────────────
