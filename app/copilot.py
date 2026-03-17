@@ -23,6 +23,7 @@ from app.registry import (
     list_agents,
     save_agent,
 )
+from app.tools.registry import get_tools_with_status
 from app.traces import save_run
 from app.workflows import list_workflows, run_workflow, save_workflow
 
@@ -181,7 +182,7 @@ TOOLS:
 - run_workflow: Execute a saved workflow with an initial input
 - memory_search: Search stored memories for relevant context
 - memory_add: Save information to persistent memory
-- list_tools: Show available MCP tools from connected servers
+- list_tools: Show all available tools (registry + MCP servers)
 - browse_web: Browse a web page and extract content
 
 WORKFLOWS:
@@ -234,6 +235,15 @@ async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) 
         enabled_tools.append("memory")
     if config.include_web:
         enabled_tools.append("web")
+
+    # Include ready tools from the registry
+    try:
+        registry_tools = await get_tools_with_status()
+        for t in registry_tools:
+            if t["configured"] and t["enabled"] and t["id"] not in enabled_tools:
+                enabled_tools.append(t["id"])
+    except Exception:
+        pass  # Registry is best-effort
 
     # Auto-save to registry (upserts if name already exists)
     record = await save_agent(config)
@@ -453,29 +463,56 @@ async def memory_add(
 async def list_tools(
     ctx: RunContext[StateDeps[NexusState]], server_name: str = ""
 ) -> str:
-    """List available MCP tools from connected servers.
+    """List all available tools: built-in registry tools and MCP server tools.
 
     Args:
-        server_name: Server to query ("n8n", "playwright", or empty for all).
+        server_name: Filter by MCP server ("n8n", "playwright") or empty for all.
     """
-    if server_name:
-        tools: list[dict[str, Any]] = await list_mcp_tools(server_name=server_name)
-        if not tools:
-            return f"No tools available from '{server_name}' (server may be unreachable)."
-        tool_lines = [f"- {t['name']}: {t['description']}" for t in tools]
-        return f"MCP tools from '{server_name}' ({len(tools)}):\n" + "\n".join(tool_lines)
+    state: NexusState = ctx.deps.state
+    state.active_panel = "tools"
 
-    # List all servers and their tools
-    servers = list_registered_servers()
     parts: list[str] = []
-    for name in servers:
-        tools = await list_mcp_tools(server_name=name)
-        if tools:
-            tool_lines = [f"  - {t['name']}: {t['description']}" for t in tools]
-            parts.append(f"**{name}** ({len(tools)} tools):\n" + "\n".join(tool_lines))
+
+    # Registry tools (grouped by category)
+    registry_tools = await get_tools_with_status()
+    categories: dict[str, list[dict[str, Any]]] = {}
+    for t in registry_tools:
+        categories.setdefault(t["category"], []).append(t)
+
+    registry_lines: list[str] = []
+    for cat, cat_tools in sorted(categories.items()):
+        tool_entries = []
+        for t in cat_tools:
+            status = "ready" if t["configured"] and t["enabled"] else "needs config"
+            tool_entries.append(f"  - {t['name']}: {t['description']} [{status}]")
+        registry_lines.append(f"**{cat}**:\n" + "\n".join(tool_entries))
+
+    ready_count = sum(1 for t in registry_tools if t["configured"] and t["enabled"])
+    parts.append(
+        f"**Tool Registry** ({ready_count}/{len(registry_tools)} ready):\n\n"
+        + "\n\n".join(registry_lines)
+    )
+
+    # MCP tools
+    if server_name:
+        mcp_tools: list[dict[str, Any]] = await list_mcp_tools(server_name=server_name)
+        if mcp_tools:
+            tool_lines = [f"  - {t['name']}: {t['description']}" for t in mcp_tools]
+            header = f"**MCP: {server_name}** ({len(mcp_tools)} tools):"
+            parts.append(header + "\n" + "\n".join(tool_lines))
         else:
-            parts.append(f"**{name}**: unavailable or no tools")
-    return "Connected MCP servers:\n\n" + "\n\n".join(parts)
+            parts.append(f"**MCP: {server_name}**: unavailable")
+    else:
+        servers = list_registered_servers()
+        for name in servers:
+            mcp_tools = await list_mcp_tools(server_name=name)
+            if mcp_tools:
+                tool_lines = [f"  - {t['name']}: {t['description']}" for t in mcp_tools]
+                parts.append(f"**MCP: {name}** ({len(mcp_tools)} tools):\n" + "\n".join(tool_lines))
+            else:
+                parts.append(f"**MCP: {name}**: unavailable")
+
+    return "\n\n---\n\n".join(parts)
 
 
 @copilot_agent.tool
