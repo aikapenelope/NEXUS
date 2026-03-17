@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Bot, Brain, Database, Wrench, MessageSquare, BarChart3 } from "lucide-react";
+import { Bot, Brain, Database, Wrench, MessageSquare, BarChart3, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface SidebarProps {
@@ -15,6 +15,7 @@ const navItems = [
   { id: "cerebro", icon: Brain, label: "Cerebro" },
   { id: "memory", icon: Database, label: "Memory" },
   { id: "tools", icon: Wrench, label: "Tools" },
+  { id: "activity", icon: Activity, label: "Activity" },
 ];
 
 export function Sidebar({ activePanel, onPanelChange }: SidebarProps) {

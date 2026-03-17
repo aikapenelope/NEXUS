@@ -24,6 +24,8 @@ from app.conversations import (
     update_conversation_title,
 )
 from app.copilot import copilot_app
+from app.evals import EVALUATORS, list_evals, run_eval
+from app.events import get_event_stats, list_events
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
 from app.registry import (
@@ -35,11 +37,18 @@ from app.registry import (
     update_agent,
     update_agent_run_stats,
 )
-from app.traces import get_dashboard_stats, get_run, list_runs, save_run
+from app.tools.registry import (
+    TOOL_CATEGORIES,
+    get_tools_with_status,
+    save_tool_config,
+)
+from app.traces import get_dashboard_stats, get_monitor_data, get_run, list_runs, save_run
 from app.workflows import (
+    approve_workflow,
     delete_workflow,
     get_workflow,
     list_workflows,
+    reject_workflow,
     run_workflow,
     save_workflow,
 )
@@ -649,6 +658,224 @@ async def dashboard_stats() -> DashboardStatsResponse:
         ) from e
 
 
+class MonitorDataResponse(BaseModel):
+    """Combined monitoring data for the monitor page."""
+
+    data: dict[str, Any]
+
+
+@app.get("/dashboard/monitor", response_model=MonitorDataResponse)
+async def dashboard_monitor() -> MonitorDataResponse:
+    """Get combined monitoring data: agent status, events, latency series, recent runs."""
+    try:
+        data = await get_monitor_data()
+        return MonitorDataResponse(data=data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Monitor data failed: {e}"
+        ) from e
+
+
+# ── Events endpoints ─────────────────────────────────────────────────
+
+
+class EventListResponse(BaseModel):
+    """List of agent activity events."""
+
+    events: list[dict[str, Any]]
+
+
+class EventStatsResponse(BaseModel):
+    """Aggregate event statistics."""
+
+    stats: dict[str, Any]
+
+
+@app.get("/events", response_model=EventListResponse)
+async def list_events_endpoint(
+    limit: int = 50,
+    agent_name: str | None = None,
+    event_type: str | None = None,
+) -> EventListResponse:
+    """List recent agent activity events, newest first."""
+    try:
+        events = await list_events(
+            limit=limit, agent_name=agent_name, event_type=event_type
+        )
+        return EventListResponse(events=events)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Event list failed: {e}"
+        ) from e
+
+
+@app.get("/events/stats", response_model=EventStatsResponse)
+async def event_stats_endpoint() -> EventStatsResponse:
+    """Get aggregate event statistics for the monitoring dashboard."""
+    try:
+        stats = await get_event_stats()
+        return EventStatsResponse(stats=stats)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Event stats failed: {e}"
+        ) from e
+
+
+# ── Tool Registry endpoints ──────────────────────────────────────────
+
+
+class ToolListResponse(BaseModel):
+    """List of tools with configuration status."""
+
+    tools: list[dict[str, Any]]
+
+
+class ToolCategoriesResponse(BaseModel):
+    """Available tool categories."""
+
+    categories: list[str]
+
+
+class ToolConfigureRequest(BaseModel):
+    """Configure a tool with required settings."""
+
+    tool_id: str = Field(description="Tool identifier from the catalog")
+    config: dict[str, Any] = Field(
+        description="Configuration key-value pairs (e.g. api_key)"
+    )
+    enabled: bool = Field(default=True, description="Enable or disable the tool")
+
+
+class ToolConfigureResponse(BaseModel):
+    """Result of configuring a tool."""
+
+    tool_config: dict[str, Any]
+
+
+@app.get("/tools", response_model=ToolListResponse)
+async def list_tools_endpoint(
+    category: str | None = None,
+) -> ToolListResponse:
+    """List all available tools with their configuration status."""
+    try:
+        tools = await get_tools_with_status()
+        if category:
+            tools = [t for t in tools if t["category"] == category]
+        return ToolListResponse(tools=tools)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Tool list failed: {e}"
+        ) from e
+
+
+@app.get("/tools/categories", response_model=ToolCategoriesResponse)
+async def tool_categories_endpoint() -> ToolCategoriesResponse:
+    """List available tool categories."""
+    return ToolCategoriesResponse(categories=TOOL_CATEGORIES)
+
+
+@app.post("/tools/configure", response_model=ToolConfigureResponse)
+async def configure_tool_endpoint(
+    request: ToolConfigureRequest,
+) -> ToolConfigureResponse:
+    """Configure a tool with API keys or other settings."""
+    try:
+        result = await save_tool_config(
+            tool_id=request.tool_id,
+            config=request.config,
+            enabled=request.enabled,
+        )
+        return ToolConfigureResponse(tool_config=result)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Tool configuration failed: {e}"
+        ) from e
+
+
+# ── Eval endpoints ───────────────────────────────────────────────────
+
+
+class EvalTestCase(BaseModel):
+    """A single test case for evaluation."""
+
+    prompt: str = Field(description="Input prompt for the agent")
+    expected: str = Field(description="Expected output or substring")
+
+
+class RunEvalRequest(BaseModel):
+    """Request to run an evaluation suite."""
+
+    dataset: list[EvalTestCase] = Field(
+        description="List of test cases to evaluate"
+    )
+    evaluator: str = Field(
+        default="contains",
+        description="Evaluator to use: exact_match, contains, or llm_judge",
+    )
+
+
+class EvalResponse(BaseModel):
+    """Evaluation result."""
+
+    evaluation: dict[str, Any]
+
+
+class EvalListResponse(BaseModel):
+    """List of evaluations."""
+
+    evaluations: list[dict[str, Any]]
+
+
+class EvaluatorsResponse(BaseModel):
+    """Available evaluators."""
+
+    evaluators: dict[str, str]
+
+
+@app.post("/agents/{agent_id}/eval", response_model=EvalResponse)
+async def run_eval_endpoint(
+    agent_id: str,
+    request: RunEvalRequest,
+) -> EvalResponse:
+    """Run an evaluation suite against a saved agent."""
+    if request.evaluator not in EVALUATORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown evaluator: {request.evaluator}. Available: {list(EVALUATORS.keys())}",
+        )
+    try:
+        dataset = [{"prompt": tc.prompt, "expected": tc.expected} for tc in request.dataset]
+        result = await run_eval(agent_id, dataset, request.evaluator)
+        return EvalResponse(evaluation=result)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Evaluation failed: {e}"
+        ) from e
+
+
+@app.get("/agents/{agent_id}/evals", response_model=EvalListResponse)
+async def list_evals_endpoint(
+    agent_id: str,
+    limit: int = 20,
+) -> EvalListResponse:
+    """List evaluations for an agent."""
+    try:
+        evals = await list_evals(agent_id, limit)
+        return EvalListResponse(evaluations=evals)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list evals: {e}"
+        ) from e
+
+
+@app.get("/evals/evaluators", response_model=EvaluatorsResponse)
+async def list_evaluators_endpoint() -> EvaluatorsResponse:
+    """List available evaluator types."""
+    return EvaluatorsResponse(evaluators=EVALUATORS)
+
+
 # ── Memory endpoints ─────────────────────────────────────────────────
 
 
@@ -804,6 +1031,10 @@ class WorkflowStep(BaseModel):
         default="{input}",
         description="Prompt template with {input} placeholder for previous output",
     )
+    requires_approval: bool = Field(
+        default=False,
+        description="If true, workflow pauses after this step for human approval",
+    )
 
 
 class WorkflowCreateRequest(BaseModel):
@@ -855,6 +1086,16 @@ class WorkflowRunResponse(BaseModel):
     steps: list[dict[str, Any]]
     final_output: str
     total_steps: int
+    status: str = Field(
+        default="completed",
+        description="completed, awaiting_approval, or rejected",
+    )
+    pending_step: int | None = Field(
+        default=None, description="Next step index awaiting approval"
+    )
+    rejection_reason: str | None = Field(
+        default=None, description="Reason for rejection, if rejected"
+    )
 
 
 # ── Workflow endpoints ───────────────────────────────────────────────
@@ -943,6 +1184,49 @@ async def run_workflow_endpoint(
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Workflow execution failed: {e}"
+        ) from e
+
+
+# ── Workflow HITL endpoints ──────────────────────────────────────────
+
+
+class WorkflowRejectRequest(BaseModel):
+    """Optional reason for rejecting a workflow step."""
+
+    reason: str = Field(default="", description="Why the step was rejected")
+
+
+@app.post("/workflows/{workflow_id}/approve", response_model=WorkflowRunResponse)
+async def approve_workflow_endpoint(
+    workflow_id: str,
+) -> WorkflowRunResponse:
+    """Approve a paused workflow and resume execution from the next step."""
+    try:
+        result = await approve_workflow(workflow_id)
+        return WorkflowRunResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow approval failed: {e}"
+        ) from e
+
+
+@app.post("/workflows/{workflow_id}/reject", response_model=WorkflowRunResponse)
+async def reject_workflow_endpoint(
+    workflow_id: str,
+    request: WorkflowRejectRequest | None = None,
+) -> WorkflowRunResponse:
+    """Reject a paused workflow, cancelling remaining steps."""
+    try:
+        reason = request.reason if request else ""
+        result = await reject_workflow(workflow_id, reason=reason)
+        return WorkflowRunResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Workflow rejection failed: {e}"
         ) from e
 
 

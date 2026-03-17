@@ -237,7 +237,49 @@ async def get_dashboard_stats() -> dict[str, Any]:
             """
         )
 
+        # Latency percentiles (p50, p95)
+        latency_pcts = await conn.fetchrow(
+            """
+            SELECT
+                coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p50,
+                coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95
+            FROM nexus_runs
+            """
+        )
+
+        # Error rate
+        error_stats = await conn.fetchrow(
+            """
+            SELECT
+                count(*)::int AS total,
+                count(*) FILTER (WHERE status = 'error')::int AS errors
+            FROM nexus_runs
+            """
+        )
+
+        # Tokens per hour (last 24h)
+        tokens_per_hour = await conn.fetchval(
+            """
+            SELECT coalesce(sum(total_tokens), 0)::bigint
+            FROM nexus_runs
+            WHERE created_at >= now() - interval '1 hour'
+            """
+        )
+
+        # Events count (from nexus_agent_events if table exists)
+        try:
+            events_count = await conn.fetchval(
+                "SELECT count(*)::int FROM nexus_agent_events"
+            )
+        except asyncpg.UndefinedTableError:
+            events_count = 0
+
     totals_dict = dict(totals) if totals else {}
+    pcts = dict(latency_pcts) if latency_pcts else {}
+    err = dict(error_stats) if error_stats else {}
+    err_total = err.get("total", 0)
+    err_count = err.get("errors", 0)
+    error_rate = round(err_count / err_total * 100, 1) if err_total > 0 else 0.0
 
     return {
         "total_agents": agent_count or 0,
@@ -246,6 +288,11 @@ async def get_dashboard_stats() -> dict[str, Any]:
         "total_input_tokens": int(totals_dict.get("total_input_tokens", 0)),
         "total_output_tokens": int(totals_dict.get("total_output_tokens", 0)),
         "avg_latency_ms": totals_dict.get("avg_latency_ms", 0),
+        "latency_p50_ms": pcts.get("p50", 0),
+        "latency_p95_ms": pcts.get("p95", 0),
+        "error_rate_pct": error_rate,
+        "tokens_per_hour": int(tokens_per_hour or 0),
+        "total_events": events_count or 0,
         "runs_per_day": [
             {"day": str(r["day"]), "runs": r["runs"], "tokens": int(r["tokens"])}
             for r in runs_per_day
@@ -267,4 +314,107 @@ async def get_dashboard_stats() -> dict[str, Any]:
             {"model": r["model"], "runs": r["runs"], "tokens": int(r["tokens"])}
             for r in model_breakdown
         ],
+    }
+
+
+# ── Monitor data (combined events + runs) ────────────────────────────
+
+
+async def get_monitor_data() -> dict[str, Any]:
+    """Return combined monitoring data for the /dashboard/monitor page.
+
+    Includes per-agent status, recent events, latency time-series,
+    and recent runs with details.
+    """
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        # Per-agent status: last run, total tokens, error count
+        agent_status = await conn.fetch(
+            """
+            SELECT
+                agent_name,
+                count(*)::int AS total_runs,
+                count(*) FILTER (WHERE status = 'error')::int AS error_count,
+                coalesce(sum(total_tokens), 0)::bigint AS total_tokens,
+                coalesce(avg(latency_ms), 0)::int AS avg_latency_ms,
+                max(created_at) AS last_run_at
+            FROM nexus_runs
+            GROUP BY agent_name
+            ORDER BY last_run_at DESC
+            """
+        )
+
+        # Recent events (last 50)
+        try:
+            recent_events = await conn.fetch(
+                """
+                SELECT * FROM nexus_agent_events
+                ORDER BY created_at DESC LIMIT 50
+                """
+            )
+        except asyncpg.UndefinedTableError:
+            recent_events = []
+
+        # Latency time-series (hourly, last 24h)
+        latency_series = await conn.fetch(
+            """
+            SELECT
+                date_trunc('hour', created_at) AS hour,
+                coalesce(avg(latency_ms), 0)::int AS avg_latency,
+                coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p50,
+                coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95,
+                count(*)::int AS runs,
+                coalesce(sum(total_tokens), 0)::bigint AS tokens
+            FROM nexus_runs
+            WHERE created_at >= now() - interval '24 hours'
+            GROUP BY hour ORDER BY hour
+            """
+        )
+
+        # Recent runs (last 20)
+        recent_runs = await conn.fetch(
+            """
+            SELECT * FROM nexus_runs
+            ORDER BY created_at DESC LIMIT 20
+            """
+        )
+
+    def _event_to_dict(row: asyncpg.Record) -> dict[str, Any]:
+        d: dict[str, Any] = dict(row)
+        if isinstance(d.get("id"), uuid.UUID):
+            d["id"] = str(d["id"])
+        if isinstance(d.get("created_at"), datetime):
+            d["created_at"] = d["created_at"].isoformat()
+        return d
+
+    return {
+        "agent_status": [
+            {
+                "agent_name": r["agent_name"],
+                "total_runs": r["total_runs"],
+                "error_count": r["error_count"],
+                "total_tokens": int(r["total_tokens"]),
+                "avg_latency_ms": r["avg_latency_ms"],
+                "last_run_at": r["last_run_at"].isoformat()
+                if r["last_run_at"]
+                else None,
+                "status": "error"
+                if r["error_count"] > 0
+                else "idle",
+            }
+            for r in agent_status
+        ],
+        "recent_events": [_event_to_dict(e) for e in recent_events],
+        "latency_series": [
+            {
+                "hour": r["hour"].isoformat() if r["hour"] else None,
+                "avg_latency": r["avg_latency"],
+                "p50": r["p50"],
+                "p95": r["p95"],
+                "runs": r["runs"],
+                "tokens": int(r["tokens"]),
+            }
+            for r in latency_series
+        ],
+        "recent_runs": [_row_to_dict(r) for r in recent_runs],
     }

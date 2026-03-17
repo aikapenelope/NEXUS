@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Bot, Brain, Database, RefreshCw, Trash2 } from "lucide-react";
-import type { NexusState, RegistryAgent } from "@/lib/types";
+import { Bot, Brain, Database, RefreshCw, Trash2, Activity } from "lucide-react";
+import type { NexusState, RegistryAgent, AgentActivity } from "@/lib/types";
 import { fetchAgents, deleteAgent } from "@/lib/api";
 
 interface RightPanelProps {
@@ -21,6 +21,7 @@ export function RightPanel({ state }: RightPanelProps) {
         {panel === "agents" && <AgentPanel state={state} />}
         {panel === "cerebro" && <CerebroPanel state={state} />}
         {panel === "memory" && <MemoryPanel state={state} />}
+        {panel === "activity" && <ActivityFeedPanel state={state} />}
       </div>
     </aside>
   );
@@ -327,6 +328,123 @@ function MemoryPanel({ state }: { state: NexusState }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Activity Feed Panel ─────────────────────────────────────────────
+
+const EVENT_CONFIG: Record<
+  string,
+  { color: string; bg: string; border: string; icon: string }
+> = {
+  start: {
+    color: "text-blue-400",
+    bg: "bg-blue-500/10",
+    border: "border-blue-500/20",
+    icon: "▶",
+  },
+  tool_call: {
+    color: "text-amber-400",
+    bg: "bg-amber-500/10",
+    border: "border-amber-500/20",
+    icon: "◉",
+  },
+  complete: {
+    color: "text-emerald-400",
+    bg: "bg-emerald-500/10",
+    border: "border-emerald-500/20",
+    icon: "✓",
+  },
+  error: {
+    color: "text-red-400",
+    bg: "bg-red-500/10",
+    border: "border-red-500/20",
+    icon: "✗",
+  },
+  info: {
+    color: "text-zinc-400",
+    bg: "bg-zinc-800",
+    border: "border-zinc-700",
+    icon: "•",
+  },
+};
+
+function formatEventTime(timestamp: string): string {
+  if (!timestamp) return "";
+  try {
+    const d = new Date(timestamp);
+    return d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function ActivityFeedPanel({ state }: { state: NexusState }) {
+  const events: AgentActivity[] = state.activity_log ?? [];
+  // Show newest first
+  const sorted = [...events].reverse();
+
+  if (sorted.length === 0) {
+    return (
+      <div className="text-zinc-500 text-sm">
+        <Activity className="w-5 h-5 mb-2" />
+        No agent activity yet. Run an agent to see live events.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-sm font-medium text-zinc-300 mb-3 flex items-center gap-2">
+        <Activity className="w-4 h-4" /> Activity Feed ({sorted.length})
+      </h3>
+      <div className="space-y-1.5">
+        {sorted.map((event, i) => {
+          const cfg = EVENT_CONFIG[event.event_type] ?? EVENT_CONFIG.info;
+          return (
+            <div
+              key={`${event.timestamp}-${i}`}
+              className={`p-2 rounded border ${cfg.bg} ${cfg.border}`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`text-xs font-mono ${cfg.color}`}>
+                  {cfg.icon}
+                </span>
+                <span className="text-xs font-medium text-zinc-200 truncate flex-1">
+                  {event.agent_name}
+                </span>
+                <span className="text-xs text-zinc-500 shrink-0">
+                  {formatEventTime(event.timestamp)}
+                </span>
+              </div>
+              {event.detail && (
+                <p className="text-xs text-zinc-400 mt-1 truncate pl-5">
+                  {event.detail}
+                </p>
+              )}
+              {(event.tokens > 0 || event.latency_ms > 0) && (
+                <div className="flex gap-3 mt-1 pl-5">
+                  {event.tokens > 0 && (
+                    <span className="text-xs text-zinc-500">
+                      {event.tokens.toLocaleString()} tok
+                    </span>
+                  )}
+                  {event.latency_ms > 0 && (
+                    <span className="text-xs text-zinc-500">
+                      {(event.latency_ms / 1000).toFixed(1)}s
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

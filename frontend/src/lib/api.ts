@@ -5,7 +5,7 @@
  * (dev or exposed API), use the NEXT_PUBLIC_API_URL env var.
  */
 
-import type { RegistryAgent } from "./types";
+import type { AgentActivity, RegistryAgent } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -104,6 +104,7 @@ export async function deleteAgent(agentId: string): Promise<boolean> {
 export interface WorkflowStep {
   agent_name: string;
   prompt_template: string;
+  requires_approval?: boolean;
 }
 
 export interface Workflow {
@@ -150,6 +151,9 @@ export interface WorkflowRunResult {
   }[];
   final_output: string;
   total_steps: number;
+  status?: string;
+  pending_step?: number | null;
+  rejection_reason?: string | null;
 }
 
 // ── Workflow API functions ───────────────────────────────────────────
@@ -204,6 +208,39 @@ export async function runWorkflow(
   });
   if (!res.ok) {
     throw new Error(`Failed to run workflow: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Approve a paused workflow and resume execution. */
+export async function approveWorkflow(
+  workflowId: string
+): Promise<WorkflowRunResult> {
+  const res = await fetch(
+    `${API_BASE}/api/workflows/${workflowId}/approve`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to approve workflow: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Reject a paused workflow, cancelling remaining steps. */
+export async function rejectWorkflow(
+  workflowId: string,
+  reason = ""
+): Promise<WorkflowRunResult> {
+  const res = await fetch(
+    `${API_BASE}/api/workflows/${workflowId}/reject`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to reject workflow: ${res.status}`);
   }
   return res.json();
 }
@@ -346,4 +383,238 @@ export async function fetchMessages(
   }
   const data: MessageListResponse = await res.json();
   return data.messages;
+}
+
+// ── Tool Registry API ───────────────────────────────────────────────
+
+export interface ToolInfo {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  requires_config: boolean;
+  config_fields: string[];
+  built_in: boolean;
+  configured: boolean;
+  enabled: boolean;
+}
+
+interface ToolListResponse {
+  tools: ToolInfo[];
+}
+
+interface ToolCategoriesResponse {
+  categories: string[];
+}
+
+interface ToolConfigureResponse {
+  tool_config: Record<string, unknown>;
+}
+
+/** Fetch all tools with configuration status. */
+export async function fetchTools(
+  category?: string
+): Promise<ToolInfo[]> {
+  const params = category ? `?category=${category}` : "";
+  const res = await fetch(`${API_BASE}/api/tools${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch tools: ${res.status}`);
+  }
+  const data: ToolListResponse = await res.json();
+  return data.tools;
+}
+
+/** Fetch tool categories. */
+export async function fetchToolCategories(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/api/tools/categories`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch categories: ${res.status}`);
+  }
+  const data: ToolCategoriesResponse = await res.json();
+  return data.categories;
+}
+
+/** Configure a tool with settings. */
+export async function configureTool(
+  toolId: string,
+  config: Record<string, string>,
+  enabled = true
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/tools/configure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool_id: toolId, config, enabled }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to configure tool: ${res.status}`);
+  }
+  const data: ToolConfigureResponse = await res.json();
+  return data.tool_config;
+}
+
+// ── Monitor API ─────────────────────────────────────────────────────
+
+export interface AgentStatusInfo {
+  agent_name: string;
+  total_runs: number;
+  error_count: number;
+  total_tokens: number;
+  avg_latency_ms: number;
+  last_run_at: string | null;
+  status: "idle" | "error";
+}
+
+export interface LatencyPoint {
+  hour: string | null;
+  avg_latency: number;
+  p50: number;
+  p95: number;
+  runs: number;
+  tokens: number;
+}
+
+export interface MonitorEvent {
+  id: string;
+  agent_name: string;
+  run_id: string | null;
+  event_type: string;
+  detail: string;
+  tokens: number;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface RunInfo {
+  id: string;
+  agent_id: string | null;
+  agent_name: string;
+  prompt: string;
+  output: string;
+  model: string;
+  role: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  status: string;
+  source: string;
+  created_at: string;
+}
+
+export interface MonitorData {
+  agent_status: AgentStatusInfo[];
+  recent_events: MonitorEvent[];
+  latency_series: LatencyPoint[];
+  recent_runs: RunInfo[];
+}
+
+interface MonitorDataResponse {
+  data: MonitorData;
+}
+
+/** Fetch combined monitoring data. */
+export async function fetchMonitorData(): Promise<MonitorData> {
+  const res = await fetch(`${API_BASE}/api/dashboard/monitor`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch monitor data: ${res.status}`);
+  }
+  const data: MonitorDataResponse = await res.json();
+  return data.data;
+}
+
+// ── Evals API ───────────────────────────────────────────────────────
+
+export interface EvalTestCase {
+  prompt: string;
+  expected: string;
+}
+
+export interface EvalResultCase {
+  prompt: string;
+  expected: string;
+  output: string;
+  score: number;
+  status: string;
+  error?: string;
+}
+
+export interface EvalScores {
+  evaluator: string;
+  avg_score: number;
+  pass_rate: number;
+  total_cases: number;
+  passed: number;
+  failed: number;
+}
+
+export interface EvalRecord {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  dataset: EvalTestCase[];
+  results: EvalResultCase[];
+  scores: EvalScores;
+  status: string;
+  created_at: string;
+}
+
+interface EvalResponse {
+  evaluation: EvalRecord;
+}
+
+interface EvalListResponse {
+  evaluations: EvalRecord[];
+}
+
+/** Run an evaluation suite against an agent. */
+export async function runEval(
+  agentId: string,
+  dataset: EvalTestCase[],
+  evaluator = "contains"
+): Promise<EvalRecord> {
+  const res = await fetch(`${API_BASE}/api/agents/${agentId}/eval`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset, evaluator }),
+  });
+  if (!res.ok) {
+    throw new Error(`Eval failed: ${res.status}`);
+  }
+  const data: EvalResponse = await res.json();
+  return data.evaluation;
+}
+
+/** List evaluations for an agent. */
+export async function fetchEvals(agentId: string): Promise<EvalRecord[]> {
+  const res = await fetch(`${API_BASE}/api/agents/${agentId}/evals`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch evals: ${res.status}`);
+  }
+  const data: EvalListResponse = await res.json();
+  return data.evaluations;
+}
+
+// ── Events API ──────────────────────────────────────────────────────
+
+interface EventListResponse {
+  events: AgentActivity[];
+}
+
+/** Fetch recent agent activity events, newest first. */
+export async function fetchEvents(options?: {
+  limit?: number;
+  agent_name?: string;
+  event_type?: string;
+}): Promise<AgentActivity[]> {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (options?.agent_name) params.set("agent_name", options.agent_name);
+  if (options?.event_type) params.set("event_type", options.event_type);
+  const qs = params.toString();
+  const res = await fetch(`${API_BASE}/api/events${qs ? `?${qs}` : ""}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch events: ${res.status}`);
+  }
+  const data: EventListResponse = await res.json();
+  return data.events;
 }
