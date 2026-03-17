@@ -71,6 +71,15 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         else:
             cost_budget = settings.worker_cost_budget
 
+    # Disable web_search approval to prevent DeferredToolRequests from being
+    # added to the agent's output_type.  When DeferredToolRequests is in the
+    # union, AG-UI streaming and the copilot context cannot handle the output
+    # correctly, causing runtime failures.  Setting web_search=False in
+    # interrupt_on keeps the web tools available without the deferred wrapper.
+    interrupt_on: dict[str, bool] | None = None
+    if config.include_web:
+        interrupt_on = {"web_search": False}
+
     agent: Agent[DeepAgentDeps, str] = create_deep_agent(
         model=model,
         instructions=config.instructions,
@@ -83,6 +92,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         context_manager=config.context_manager,
         cost_tracking=True,
         cost_budget_usd=cost_budget,
+        interrupt_on=interrupt_on,
     )
     return agent
 
@@ -94,71 +104,15 @@ async def run_agent(
 ) -> dict[str, Any]:
     """Build an agent from config, run it with the given prompt, return results.
 
-    Uses a lightweight pydantic-ai Agent (not pydantic-deep) to avoid
-    deferred tool call issues when called from the AG-UI copilot context.
-
-    If user_id is provided, Mem0 semantic memory is searched for relevant
-    context and injected into the prompt.
+    Now delegates to run_deep_agent since the DeferredToolRequests issue
+    has been fixed by passing interrupt_on={'web_search': False} in
+    build_agent().  This means agents called from the copilot context
+    now get full tool access (web, memory, etc.) instead of being
+    stripped down to a simple text-only agent.
 
     Returns a dict with the agent output and usage metadata.
     """
-    model = get_model_for_role(config.role)
-
-    # Resolve token limit
-    token_limit = config.token_limit
-    if token_limit is None:
-        if config.role in ("builder", "analysis"):
-            token_limit = settings.builder_token_limit
-        else:
-            token_limit = settings.worker_token_limit
-
-    # Inject Mem0 semantic memory context if user_id is provided
-    enriched_prompt = prompt
-    if user_id:
-        try:
-            from app.memory import search_memory
-
-            memories = await search_memory(query=prompt, user_id=user_id, agent_id=config.name)
-            if memories:
-                memory_lines = [
-                    m.get("memory", m.get("text", ""))
-                    for m in memories
-                    if m.get("memory") or m.get("text")
-                ]
-                if memory_lines:
-                    context = "\n".join(f"- {line}" for line in memory_lines)
-                    enriched_prompt = (
-                        f"Relevant memories about this user:\n{context}\n\n---\n\n{prompt}"
-                    )
-        except Exception:
-            pass  # Memory is best-effort, don't block agent execution
-
-    # Use a simple Agent instead of create_deep_agent to avoid
-    # DeferredToolRequests errors in the AG-UI streaming context.
-    simple_agent: Agent[None, str] = Agent(
-        model,
-        system_prompt=(
-            f"{config.instructions}\n\n"
-            "IMPORTANT: You do NOT have access to any tools or functions. "
-            "Respond directly with helpful text based on your knowledge. "
-            "Do NOT output function calls, XML tags, or tool invocations."
-        ),
-    )
-
-    result = await simple_agent.run(
-        enriched_prompt,
-        usage_limits=UsageLimits(total_tokens_limit=token_limit),
-    )
-
-    return {
-        "output": result.output,
-        "usage": {
-            "requests": result.usage().requests,
-            "input_tokens": result.usage().input_tokens,
-            "output_tokens": result.usage().output_tokens,
-            "total_tokens": result.usage().total_tokens,
-        },
-    }
+    return await run_deep_agent(config, prompt, user_id=user_id)
 
 
 async def run_deep_agent(
@@ -168,12 +122,18 @@ async def run_deep_agent(
 ) -> dict[str, Any]:
     """Build and run a full pydantic-deep agent (with sub-agents, tools, etc.).
 
-    This version uses create_deep_agent and is intended for the REST API
-    (/run endpoint), NOT for inline copilot tool calls (which would fail
-    due to DeferredToolRequests in the AG-UI streaming context).
+    Results are cached in Redis by hash(agent_name + prompt) with a 5-minute
+    TTL.  Cache is best-effort: if Redis is down, the agent runs normally.
 
     Returns a dict with the agent output and usage metadata.
     """
+    from app.cache import get_cached_result, set_cached_result
+
+    # Check cache first
+    cached = await get_cached_result(config.name, prompt)
+    if cached is not None:
+        return cached
+
     agent = build_agent(config)
     deps = DeepAgentDeps(backend=StateBackend())
 
@@ -212,7 +172,7 @@ async def run_deep_agent(
         usage_limits=UsageLimits(total_tokens_limit=token_limit),
     )
 
-    return {
+    output = {
         "output": result.output,
         "usage": {
             "requests": result.usage().requests,
@@ -221,3 +181,8 @@ async def run_deep_agent(
             "total_tokens": result.usage().total_tokens,
         },
     }
+
+    # Cache the result (best-effort, non-blocking)
+    await set_cached_result(config.name, prompt, output)
+
+    return output

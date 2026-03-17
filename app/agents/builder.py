@@ -37,9 +37,7 @@ AVAILABLE TOOLS (feature toggles):
   workflows where the agent needs to track progress (e.g. "research 5 topics
   then summarize each"). Adds ~1000 tokens overhead per request.
 - include_web: Gives web_search and fetch_url tools. Enable when the agent
-  needs live/current information from the internet. NOTE: currently has a
-  known issue with DeferredToolRequests — works at the Groq API level but
-  may fail in the pydantic-deep runtime. Use cautiously.
+  needs live/current information from the internet.
 - include_memory: Persistent semantic memory via Mem0 + pgvector. Enable for
   agents that interact repeatedly with the same user and need to remember
   preferences, past conversations, or accumulated knowledge.

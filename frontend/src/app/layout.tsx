@@ -3,6 +3,7 @@
 import "./globals.css";
 import "@copilotkit/react-ui/styles.css";
 import { CopilotKit } from "@copilotkit/react-core";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 export default function RootLayout({
   children,
@@ -12,12 +13,14 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="antialiased">
-        <CopilotKit
-          runtimeUrl="/api/copilotkit"
-          agent="nexus_copilot"
-        >
-          {children}
-        </CopilotKit>
+        <ErrorBoundary>
+          <CopilotKit
+            runtimeUrl="/api/copilotkit"
+            agent="nexus_copilot"
+          >
+            {children}
+          </CopilotKit>
+        </ErrorBoundary>
       </body>
     </html>
   );
