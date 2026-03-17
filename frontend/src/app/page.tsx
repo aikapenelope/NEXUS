@@ -1,10 +1,12 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCoAgent } from "@copilotkit/react-core";
 import { Sidebar } from "@/components/Sidebar";
-import { RightPanel } from "@/components/RightPanel";
+import { ConversationSidebar } from "@/components/ConversationSidebar";
 import { ChatPersistence } from "@/components/ChatPersistence";
+import { RightPanel } from "@/components/RightPanel";
 import { StateRenderers } from "@/components/generative-ui/StateRenderers";
 import type { NexusState } from "@/lib/types";
 
@@ -34,14 +36,44 @@ export default function Home() {
     setState({ ...state, active_panel: next });
   };
 
+  // ── Conversation state ──────────────────────────────────────────
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const handleConversationSelect = useCallback((id: string | null) => {
+    setActiveConversationId(id);
+  }, []);
+
+  const handleConversationCreated = useCallback((id: string) => {
+    setActiveConversationId(id);
+    setRefreshKey((k) => k + 1);
+  }, []);
+
+  const handleMessagesChanged = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+  }, []);
+
   return (
     <div className="flex h-screen bg-zinc-950">
       {/* Side-effect components (invisible) */}
-      <ChatPersistence />
+      <ChatPersistence
+        activeConversationId={activeConversationId}
+        onConversationCreated={handleConversationCreated}
+        onMessagesChanged={handleMessagesChanged}
+      />
       <StateRenderers />
 
-      {/* Left sidebar */}
+      {/* Left icon sidebar */}
       <Sidebar activePanel={activePanel} onPanelChange={handlePanelChange} />
+
+      {/* Conversation history sidebar */}
+      <ConversationSidebar
+        activeId={activeConversationId}
+        onSelect={handleConversationSelect}
+        refreshKey={refreshKey}
+      />
 
       {/* Center: Chat */}
       <main className="flex-1 flex flex-col min-w-0">
@@ -54,8 +86,10 @@ export default function Home() {
             className="copilotKitChat h-full"
             labels={{
               title: "NEXUS Agent Platform",
-              initial: "Hello! I'm NEXUS. I can build AI agents, run analysis pipelines, and manage semantic memory. What would you like to do?",
-              placeholder: "Ask NEXUS to build an agent, run Cerebro, or search memory...",
+              initial:
+                "Hello! I'm NEXUS. I can build AI agents, run analysis pipelines, and manage semantic memory. What would you like to do?",
+              placeholder:
+                "Ask NEXUS to build an agent, run Cerebro, or search memory...",
             }}
           />
         </div>
