@@ -6,7 +6,6 @@
 #   nexus-frontend — Next.js 15 + CopilotKit (OpenAI-style dark UI)
 #   postgres       — PostgreSQL 17 + pgvector (data, mem0, RAG embeddings)
 #   redis          — Redis 7 (caching, queues, agent state)
-#   n8n            — Workflow automation (MCP hub)
 #   playwright     — Headless browser automation (Playwright MCP server)
 #   prefect        — Agent scheduling and orchestration
 #
@@ -29,6 +28,13 @@ services:
     cpus: 4
     ports:
       - "8000:8000"
+    volumes:
+      # Docker socket for deep agent sandbox containers.
+      # Allows nexus-api to create isolated Docker containers for code execution.
+      # The DOCKER_GID env var should match the docker group GID on the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-999}"
     environment:
       # Provider SDKs read these directly
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -74,7 +80,7 @@ services:
   # ── PostgreSQL + pgvector ────────────────────────────────────────
   # Connection pooling note: PgBouncer not needed yet.
   # 4 gunicorn workers x 2 asyncpg pools (registry + traces) x max_size=5 = 40 conns.
-  # Plus mem0 (~1), prefect (~5), n8n (~5) = ~51 total. PG default max_connections=100.
+  # Plus mem0 (~1), prefect (~5) = ~46 total. PG default max_connections=100.
   # Revisit if workers increase or new services are added.
   postgres:
     image: pgvector/pgvector:pg17
@@ -120,35 +126,6 @@ services:
     networks:
       - nexus-net
 
-  # ── n8n (workflow automation / MCP hub) ──────────────────────────
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: nexus-n8n
-    restart: unless-stopped
-    mem_limit: 1g
-    cpus: 1
-    ports:
-      - "5678:5678"
-    environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-nexus-n8n}
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=nexus
-      - DB_POSTGRESDB_USER=nexus
-      - DB_POSTGRESDB_PASSWORD=nexus
-      - DB_POSTGRESDB_SCHEMA=n8n
-    volumes:
-      - n8n-data:/home/node/.n8n
-    logging: *default-logging
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - nexus-net
-
   # ── Playwright MCP (browser automation) ─────────────────────────
   # Official mcp/playwright image (1.43GB vs 3.63GB for full Playwright).
   # Includes Chromium + MCP server. Entrypoint: node cli.js --headless.
@@ -188,7 +165,6 @@ services:
 volumes:
   postgres-data:
   redis-data:
-  n8n-data:
 
 networks:
   nexus-net:

@@ -40,10 +40,14 @@ class Settings(BaseSettings):
     # ── Voyage AI (embeddings) ─────────────────────────────────────────
     voyage_api_key: str = Field(default="", description="Voyage AI API key for embeddings")
 
-    # ── MCP (n8n workflow automation) ─────────────────────────────────
-    # Default SSE URL for n8n's MCP Server Trigger node.
-    # Override per-workflow via the API if needed.
-    n8n_mcp_url: str = "http://n8n:5678/mcp"
+    # ── Docker sandbox (deep agent code execution) ──────────────────────
+    # Image used for isolated code execution by deep agents (coder, reviewer).
+    # Build with: docker build -f Dockerfile.sandbox -t nexus-sandbox .
+    sandbox_image: str = "nexus-sandbox:latest"
+    sandbox_timeout: int = 300  # seconds per sandbox execution
+
+    # ── Brain repo (personal knowledge base) ───────────────────────────
+    brain_repo_url: str = "https://github.com/aikapenelope/brain.md.git"
 
     # ── MCP (Playwright browser automation) ────────────────────────────
     # Streamable HTTP URL for the Playwright MCP server (headless Chromium).

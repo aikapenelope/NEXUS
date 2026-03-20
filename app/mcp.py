@@ -1,8 +1,8 @@
 """MCP client for connecting NEXUS agents to external MCP servers.
 
 Supports multiple MCP servers:
-  - n8n: Workflow automation (SSE transport)
   - playwright: Headless browser automation (Streamable HTTP transport)
+  - Custom servers via URL override (SSE transport)
 
 Uses pydantic-ai's native MCP clients for both SSE and Streamable HTTP.
 """
@@ -18,9 +18,8 @@ from app.config import settings
 # ── Known MCP server registry ───────────────────────────────────────
 
 # Each entry maps a server name to (url, transport_type).
-# "sse" = legacy SSE transport (n8n), "http" = Streamable HTTP (Playwright).
+# "http" = Streamable HTTP (Playwright).
 _MCP_SERVERS: dict[str, tuple[str, str]] = {
-    "n8n": (settings.n8n_mcp_url, "sse"),
     "playwright": (settings.playwright_mcp_url, "http"),
 }
 
@@ -41,10 +40,10 @@ def get_mcp_server(
     Resolution order:
       1. If server_url is provided, use it with SSE transport.
       2. If server_name is provided, look up the URL and transport.
-      3. Default to n8n.
+      3. Default to playwright.
 
     Args:
-        server_name: Registered server name ("n8n", "playwright").
+        server_name: Registered server name (e.g. "playwright").
         server_url: Full URL override (uses SSE transport).
 
     Returns:
@@ -52,7 +51,7 @@ def get_mcp_server(
     """
     if server_url:
         return MCPServerSSE(url=server_url)
-    name = server_name or "n8n"
+    name = server_name or "playwright"
     entry = _MCP_SERVERS.get(name)
     if entry is None:
         available = ", ".join(sorted(_MCP_SERVERS.keys()))
@@ -62,11 +61,6 @@ def get_mcp_server(
 
 
 # ── Convenience aliases ──────────────────────────────────────────────
-
-
-def get_n8n_mcp_server(workflow_url: str | None = None) -> MCPServer:
-    """Create an MCP client for n8n (backward-compatible)."""
-    return get_mcp_server(server_name="n8n", server_url=workflow_url)
 
 
 def get_playwright_mcp_server() -> MCPServer:
@@ -90,7 +84,7 @@ async def list_mcp_tools(
 
     Args:
         server_url: URL override.
-        server_name: Registered server name ("n8n", "playwright").
+        server_name: Registered server name (e.g. "playwright").
 
     Returns:
         List of tool metadata dicts with name, description, and schema.
@@ -123,7 +117,7 @@ async def call_mcp_tool(
         tool_name: Name of the tool to call.
         arguments: Arguments to pass to the tool.
         server_url: URL override.
-        server_name: Registered server name ("n8n", "playwright").
+        server_name: Registered server name (e.g. "playwright").
 
     Returns:
         The tool's response.

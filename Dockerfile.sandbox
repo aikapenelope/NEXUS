@@ -1,0 +1,40 @@
+# NEXUS Deep Agent Sandbox
+# Isolated environment for code execution by deep agents (coder, reviewer, researcher).
+# Built once, reused for every sandbox invocation.
+#
+# Includes: Python 3.12, Node.js 22, git, and common dev tools.
+# Size: ~350MB (slim base + minimal packages).
+
+FROM python:3.12-slim
+
+# System packages: git for repo ops, Node.js for TypeScript projects,
+# ripgrep for fast code search, curl for web fetches.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    openssh-client \
+    ripgrep \
+    jq \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dev tools: type checking, linting, formatting, testing.
+RUN pip install --no-cache-dir \
+    pyright \
+    ruff \
+    black \
+    pytest \
+    pytest-asyncio \
+    httpx \
+    pydantic
+
+# Node.js dev tools: TypeScript compiler.
+RUN npm install -g typescript tsx
+
+# Git config for agent commits.
+RUN git config --global user.name "nexus-agent" && \
+    git config --global user.email "agent@nexus.local" && \
+    git config --global init.defaultBranch main
+
+WORKDIR /workspace
