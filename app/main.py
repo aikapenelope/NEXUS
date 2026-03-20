@@ -54,15 +54,39 @@ from app.workflows import (
 )
 
 # ── Observability ────────────────────────────────────────────────────
-# Logfire auto-instruments Pydantic AI (agent runs, tool calls, LLM
-# requests) and FastAPI (HTTP requests, latency, errors) in one call.
-# Set LOGFIRE_TOKEN env var to send traces to Logfire Cloud (free tier).
-# If no token is set, tracing is disabled (no crash, no data sent).
+# Two observability layers:
+#   1. Logfire: full-stack (FastAPI, DB, Redis, system metrics)
+#   2. Phoenix: AI-specific (agent traces, evals, prompt management)
+#
+# Logfire: Set LOGFIRE_TOKEN env var for Logfire Cloud (free tier).
 _logfire_token = os.environ.get("LOGFIRE_TOKEN", "")
 if _logfire_token:
     logfire.configure(token=_logfire_token)
 else:
     logfire.configure(send_to_logfire=False)
+
+# Phoenix: Send Pydantic AI traces to self-hosted Phoenix instance.
+# Phoenix runs as a Docker container on port 6006.
+_phoenix_endpoint = os.environ.get(
+    "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"
+)
+try:
+    from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    _phoenix_provider = TracerProvider()
+    # OpenInference processor enriches spans with AI-specific attributes
+    _phoenix_provider.add_span_processor(OpenInferenceSpanProcessor())
+    # OTLP exporter sends spans to Phoenix
+    _phoenix_provider.add_span_processor(
+        SimpleSpanProcessor(OTLPSpanExporter(endpoint=_phoenix_endpoint))
+    )
+    trace.set_tracer_provider(_phoenix_provider)
+except Exception:
+    pass  # Phoenix is optional — if packages missing or unreachable, skip silently
 
 app = FastAPI(
     title="NEXUS",

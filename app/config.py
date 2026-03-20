@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Agents use this to navigate, click, fill forms, and extract data.
     playwright_mcp_url: str = "http://playwright:8931/mcp"
 
+    # ── Phoenix (AI observability) ───────────────────────────────────
+    phoenix_collector_endpoint: str = "http://phoenix:6006/v1/traces"
+
     # ── Server ──────────────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8000

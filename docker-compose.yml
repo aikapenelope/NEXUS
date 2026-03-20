@@ -162,9 +162,34 @@ services:
     networks:
       - nexus-net
 
+  # ── Phoenix (AI observability & evaluation) ──────────────────────
+  # Open-source AI observability: tracing, evals, prompt management,
+  # playground, datasets, experiments.  Complements Logfire (infra).
+  # UI at http://<host>:6006
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: nexus-phoenix
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1
+    ports:
+      - "6006:6006"
+    environment:
+      - PHOENIX_SQL_DATABASE_URL=postgresql://nexus:nexus@postgres:5432/phoenix
+      - PHOENIX_WORKING_DIR=/data
+    volumes:
+      - phoenix-data:/data
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+
 volumes:
   postgres-data:
   redis-data:
+  phoenix-data:
 
 networks:
   nexus-net:
