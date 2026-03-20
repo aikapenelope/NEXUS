@@ -1,4 +1,10 @@
-"""Agent factory: builds pydantic-deep agents from declarative AgentConfig objects."""
+"""Agent factory: builds pydantic-deep agents from declarative AgentConfig objects.
+
+Supports two execution backends:
+  - StateBackend (in-memory): For simple agents without filesystem access.
+  - DockerBackend (sandbox): For deep agents that need isolated code execution.
+    Requires Docker socket mount and the nexus-sandbox image.
+"""
 
 from __future__ import annotations
 
@@ -38,9 +44,60 @@ class AgentConfig(BaseModel):
     include_web: bool = Field(default=False, description="Enable web search/fetch tools")
     context_manager: bool = Field(default=True, description="Enable auto context compression")
 
+    # Sandbox: when True and include_filesystem is True, use DockerBackend
+    use_sandbox: bool = Field(
+        default=False,
+        description="Run in Docker sandbox (isolated code execution).",
+    )
+
     # Limits
     token_limit: int | None = Field(default=None, description="Max total tokens per run")
     cost_budget_usd: float | None = Field(default=None, description="Max USD cost per run")
+
+
+def _resolve_token_limit(config: AgentConfig) -> int:
+    """Resolve token limit: explicit config > role-based default."""
+    if config.token_limit is not None:
+        return config.token_limit
+    if config.role == "builder":
+        return settings.builder_token_limit
+    if config.role == "analysis":
+        return settings.cerebro_step_token_limit
+    return settings.worker_token_limit
+
+
+def _resolve_cost_budget(config: AgentConfig) -> float:
+    """Resolve cost budget: explicit config > role-based default."""
+    if config.cost_budget_usd is not None:
+        return config.cost_budget_usd
+    if config.role == "builder":
+        return settings.builder_cost_budget
+    if config.role == "analysis":
+        return settings.cerebro_cost_budget
+    return settings.worker_cost_budget
+
+
+def _create_backend(config: AgentConfig) -> StateBackend | Any:
+    """Create the appropriate backend for the agent.
+
+    Returns DockerSandbox for sandboxed agents, StateBackend otherwise.
+    DockerSandbox is imported lazily to avoid hard dependency on docker package
+    when not using sandbox mode.
+    """
+    if config.use_sandbox and config.include_filesystem:
+        try:
+            from pydantic_deep import DockerSandbox
+
+            return DockerSandbox(
+                image=settings.sandbox_image,
+                work_dir="/workspace",
+                auto_remove=True,
+                idle_timeout=settings.sandbox_timeout,
+            )
+        except ImportError:
+            # Fallback if sandbox extra not installed
+            pass
+    return StateBackend()
 
 
 def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
@@ -50,26 +107,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
     UsageLimits, and sets cost_budget_usd for the cost tracking middleware.
     """
     model = get_model_for_role(config.role)
-
-    # Resolve token limit: explicit config > role-based default
-    token_limit = config.token_limit
-    if token_limit is None:
-        if config.role == "builder":
-            token_limit = settings.builder_token_limit
-        elif config.role == "analysis":
-            token_limit = settings.cerebro_step_token_limit
-        else:
-            token_limit = settings.worker_token_limit
-
-    # Resolve cost budget: explicit config > role-based default
-    cost_budget = config.cost_budget_usd
-    if cost_budget is None:
-        if config.role == "builder":
-            cost_budget = settings.builder_cost_budget
-        elif config.role == "analysis":
-            cost_budget = settings.cerebro_cost_budget
-        else:
-            cost_budget = settings.worker_cost_budget
+    cost_budget = _resolve_cost_budget(config)
 
     # Disable web_search approval to prevent DeferredToolRequests from being
     # added to the agent's output_type.  When DeferredToolRequests is in the
@@ -104,12 +142,7 @@ async def run_agent(
 ) -> dict[str, Any]:
     """Build an agent from config, run it with the given prompt, return results.
 
-    Now delegates to run_deep_agent since the DeferredToolRequests issue
-    has been fixed by passing interrupt_on={'web_search': False} in
-    build_agent().  This means agents called from the copilot context
-    now get full tool access (web, memory, etc.) instead of being
-    stripped down to a simple text-only agent.
-
+    Delegates to run_deep_agent for full deep agent execution.
     Returns a dict with the agent output and usage metadata.
     """
     return await run_deep_agent(config, prompt, user_id=user_id)
@@ -125,6 +158,8 @@ async def run_deep_agent(
     Results are cached in Redis by hash(agent_name + prompt) with a 5-minute
     TTL.  Cache is best-effort: if Redis is down, the agent runs normally.
 
+    Uses DockerBackend when config.use_sandbox is True, StateBackend otherwise.
+
     Returns a dict with the agent output and usage metadata.
     """
     from app.cache import get_cached_result, set_cached_result
@@ -135,15 +170,10 @@ async def run_deep_agent(
         return cached
 
     agent = build_agent(config)
-    deps = DeepAgentDeps(backend=StateBackend())
+    backend = _create_backend(config)
+    deps = DeepAgentDeps(backend=backend)
 
-    # Resolve token limit
-    token_limit = config.token_limit
-    if token_limit is None:
-        if config.role in ("builder", "analysis"):
-            token_limit = settings.builder_token_limit
-        else:
-            token_limit = settings.worker_token_limit
+    token_limit = _resolve_token_limit(config)
 
     # Inject Mem0 semantic memory context if user_id is provided
     enriched_prompt = prompt

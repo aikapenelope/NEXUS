@@ -24,13 +24,7 @@ from app.conversations import (
     update_conversation_title,
 )
 from app.copilot import copilot_app
-from app.evals import (
-    EVALUATORS,
-    get_evals_summary,
-    list_all_evals,
-    list_evals,
-    run_eval,
-)
+from app.evals import EVALUATORS, list_evals, run_eval
 from app.events import get_event_stats, list_events
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, get_user_memories, search_memory
@@ -338,14 +332,6 @@ async def health_ready() -> ReadinessResponse:
         checks["mcp_playwright"] = f"ok ({len(tools)} tools)"
     except Exception as e:
         checks["mcp_playwright"] = f"error: {e}"
-        all_ok = False
-
-    # MCP: n8n
-    try:
-        tools = await list_mcp_tools(server_name="n8n")
-        checks["mcp_n8n"] = f"ok ({len(tools)} tools)"
-    except Exception as e:
-        checks["mcp_n8n"] = f"error: {e}"
         all_ok = False
 
     status = "ok" if all_ok else "degraded"
@@ -882,45 +868,6 @@ async def list_evaluators_endpoint() -> EvaluatorsResponse:
     return EvaluatorsResponse(evaluators=EVALUATORS)
 
 
-class AllEvalsResponse(BaseModel):
-    """All evaluations across agents."""
-
-    evaluations: list[dict[str, Any]]
-
-
-class EvalsSummaryResponse(BaseModel):
-    """Aggregate eval statistics."""
-
-    summary: dict[str, Any]
-
-
-@app.get("/evals", response_model=AllEvalsResponse)
-async def list_all_evals_endpoint(
-    limit: int = 50,
-    agent_id: str | None = None,
-) -> AllEvalsResponse:
-    """List evaluations across all agents, newest first."""
-    try:
-        evals = await list_all_evals(limit=limit, agent_id=agent_id)
-        return AllEvalsResponse(evaluations=evals)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list evals: {e}"
-        ) from e
-
-
-@app.get("/evals/summary", response_model=EvalsSummaryResponse)
-async def evals_summary_endpoint() -> EvalsSummaryResponse:
-    """Aggregate eval statistics across all agents."""
-    try:
-        summary = await get_evals_summary()
-        return EvalsSummaryResponse(summary=summary)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get eval summary: {e}"
-        ) from e
-
-
 # ── Memory endpoints ─────────────────────────────────────────────────
 
 
@@ -1003,7 +950,7 @@ class MCPCallRequest(BaseModel):
     )
     server_name: str | None = Field(
         default=None,
-        description="Registered server name: 'n8n', 'playwright' (defaults to n8n)",
+        description="Registered server name (e.g. 'playwright')",
     )
     server_url: str | None = Field(
         default=None,
@@ -1040,7 +987,7 @@ async def mcp_tools(
     """List all tools available from an MCP server.
 
     Query params:
-        server_name: Registered server ("n8n", "playwright"). Defaults to n8n.
+        server_name: Registered server (e.g. "playwright"). Defaults to playwright.
         server_url: Direct SSE URL override.
     """
     try:
