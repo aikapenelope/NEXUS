@@ -118,15 +118,6 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     },
     # ── MCP ───────────────────────────────────────────────────────
     {
-        "id": "mcp_n8n",
-        "name": "n8n Automation",
-        "description": "Trigger n8n workflows and automations via MCP",
-        "category": "MCP",
-        "requires_config": False,
-        "config_fields": [],
-        "built_in": True,
-    },
-    {
         "id": "mcp_playwright",
         "name": "Playwright Browser",
         "description": "Browser automation via Playwright MCP server",

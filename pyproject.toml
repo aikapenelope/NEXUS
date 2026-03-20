@@ -7,7 +7,7 @@ license = "MIT"
 dependencies = [
     # Agent framework — extras live on pydantic-ai-slim, not the fat package
     "pydantic-ai-slim[groq,anthropic,mcp,logfire,ag-ui]>=1.68.0",
-    "pydantic-deep[web-tools]>=0.2.20",
+    "pydantic-deep[web-tools,sandbox]>=0.2.20",
     # API
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",

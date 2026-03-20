@@ -334,14 +334,6 @@ async def health_ready() -> ReadinessResponse:
         checks["mcp_playwright"] = f"error: {e}"
         all_ok = False
 
-    # MCP: n8n
-    try:
-        tools = await list_mcp_tools(server_name="n8n")
-        checks["mcp_n8n"] = f"ok ({len(tools)} tools)"
-    except Exception as e:
-        checks["mcp_n8n"] = f"error: {e}"
-        all_ok = False
-
     status = "ok" if all_ok else "degraded"
     resp = ReadinessResponse(status=status, version="0.4.0", checks=checks)
     if not all_ok:
@@ -958,7 +950,7 @@ class MCPCallRequest(BaseModel):
     )
     server_name: str | None = Field(
         default=None,
-        description="Registered server name: 'n8n', 'playwright' (defaults to n8n)",
+        description="Registered server name (e.g. 'playwright')",
     )
     server_url: str | None = Field(
         default=None,
@@ -995,7 +987,7 @@ async def mcp_tools(
     """List all tools available from an MCP server.
 
     Query params:
-        server_name: Registered server ("n8n", "playwright"). Defaults to n8n.
+        server_name: Registered server (e.g. "playwright"). Defaults to playwright.
         server_url: Direct SSE URL override.
     """
     try:

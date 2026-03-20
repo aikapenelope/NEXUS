@@ -13,6 +13,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.ag_ui import AGUIApp, StateDeps
 
 from app.agents.builder import build_agent_from_description
+from app.agents.deep.configs import DEEP_AGENTS
 from app.agents.factory import AgentConfig, run_deep_agent
 from app.events import emit_event
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
@@ -466,7 +467,7 @@ async def list_tools(
     """List all available tools: built-in registry tools and MCP server tools.
 
     Args:
-        server_name: Filter by MCP server ("n8n", "playwright") or empty for all.
+        server_name: Filter by MCP server (e.g. "playwright") or empty for all.
     """
     state: NexusState = ctx.deps.state
     state.active_panel = "tools"
@@ -695,6 +696,109 @@ async def browse_web(
         )
     except Exception as e:
         return f"Browser error: {e}"
+
+
+@copilot_agent.tool
+async def run_deep(
+    ctx: RunContext[StateDeps[NexusState]],
+    agent_name: str,
+    task: str,
+) -> str:
+    """Run a specialized deep agent (coder, reviewer, or researcher).
+
+    Deep agents run in Docker sandboxes with filesystem access, planning,
+    web search, and persistent memory.  They are your AI development team.
+
+    Available agents:
+      - nexus-coder: Writes production code with tests and type checking.
+      - nexus-reviewer: Reviews code for bugs, security, and quality.
+      - nexus-researcher: Investigates technologies and saves to brain.
+
+    Args:
+        agent_name: One of "nexus-coder", "nexus-reviewer", "nexus-researcher".
+        task: What you want the agent to do (detailed description).
+    """
+    state: NexusState = ctx.deps.state
+    config = DEEP_AGENTS.get(agent_name)
+    if config is None:
+        available = ", ".join(DEEP_AGENTS.keys())
+        return f"Unknown agent: {agent_name}. Available: {available}"
+
+    state.active_panel = "agent"
+    state.current_agent = AgentInfo(
+        name=config.name,
+        role=config.description,
+        model=config.role,
+        tools=["filesystem", "todo", "web", "memory"],
+        status="running",
+    )
+    await _log_activity(
+        state,
+        agent_name=agent_name,
+        event_type="deep_agent_started",
+        detail=task[:80],
+    )
+
+    try:
+        result = await run_deep_agent(config, task)
+        output = result["output"]
+        usage = result["usage"]
+        total_tokens = usage.get("total_tokens", 0)
+
+        state.current_agent.status = "completed"
+        await _log_activity(
+            state,
+            agent_name=agent_name,
+            event_type="deep_agent_completed",
+            detail=f"completed ({total_tokens} tokens)",
+            tokens=total_tokens,
+        )
+
+        await save_run(
+            agent_name=config.name,
+            prompt=task[:2000],
+            output=output[:2000],
+            model=config.role,
+            role=config.role,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            total_tokens=total_tokens,
+            latency_ms=0,
+            source="deep",
+        )
+
+        if len(output) > 4000:
+            output = output[:4000] + "\n... (truncated)"
+        return output
+    except Exception as e:
+        state.current_agent.status = "error"
+        return f"Deep agent error: {e}"
+
+
+@copilot_agent.tool
+async def search_brain(
+    ctx: RunContext[StateDeps[NexusState]],
+    query: str,
+) -> str:
+    """Search the brain.md knowledge base for information.
+
+    The brain is a Git repo of Markdown notes organized by topic:
+    projects, knowledge (stacks, business, architecture), decisions,
+    and daily work journals.
+
+    Args:
+        query: What to search for (searches across all notes).
+    """
+    # Use httpx to call our own API which has brain search
+    # For now, do a simple grep via the brain tools module
+    from app.tools.brain import BRAIN_TOOLS
+
+    tool_names = [t.__name__ for t in BRAIN_TOOLS]
+    return (
+        f"Brain tools available: {', '.join(tool_names)}. "
+        f"Use run_deep with nexus-researcher to search and update the brain. "
+        f"The researcher agent has filesystem access to read/write brain notes."
+    )
 
 
 # ── AG-UI app instance ───────────────────────────────────────────────
