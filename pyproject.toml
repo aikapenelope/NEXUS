@@ -21,6 +21,9 @@ dependencies = [
     "voyageai>=0.3.0",
     # Observability
     "logfire[fastapi]>=4.0.0",
+    # Phoenix AI observability (tracing, evals, prompt management)
+    "arize-phoenix-otel>=0.9.0",
+    "openinference-instrumentation-pydantic-ai>=0.1.0",
     # Utilities
     "pydantic-settings>=2.7.0",
     "httpx>=0.28.0",
