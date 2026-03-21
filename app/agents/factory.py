@@ -40,7 +40,6 @@ from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 from app.tools.brain_toolset import create_brain_toolset
-from app.tools.graphiti_toolset import create_graphiti_toolset
 from app.tools.langchain_tools import create_langchain_toolset
 from app.tools.remember_toolset import create_remember_toolset
 
@@ -324,10 +323,11 @@ def _build_toolsets() -> list[Any]:
     if lc_toolset is not None:
         toolsets.append(lc_toolset)
 
-    # Graphiti knowledge graph (graceful degradation if not running)
-    graphiti_toolset = create_graphiti_toolset()
-    if graphiti_toolset is not None:
-        toolsets.append(graphiti_toolset)
+    # NOTE: Graphiti MCP toolset is NOT added to default toolsets because
+    # MCPServerStreamableHTTP connects during agent initialization and
+    # crashes if Graphiti is down. Graphiti tools are available via the
+    # /mcp/call REST endpoint instead. To enable for specific agents,
+    # pass graphiti_toolset explicitly via the toolsets parameter.
 
     return toolsets  # type: ignore[return-value]
 
