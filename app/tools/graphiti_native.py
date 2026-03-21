@@ -48,6 +48,7 @@ async def _get_graphiti() -> Any:
 
     try:
         from graphiti_core import Graphiti
+        from graphiti_core.driver.falkordb_driver import FalkorDriver
         from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
         from graphiti_core.llm_client.config import LLMConfig
         from graphiti_core.llm_client.openai_client import OpenAIClient
@@ -76,13 +77,19 @@ async def _get_graphiti() -> Any:
             )
         )
 
+        driver = FalkorDriver(
+            host=falkordb_uri.replace("bolt://", "").split(":")[0],
+            port=int(falkordb_uri.split(":")[-1]) if ":" in falkordb_uri else 6379,
+        )
+
         _graphiti_client = Graphiti(
             uri=falkordb_uri,
             llm_client=llm_client,
             embedder=embedder,
+            graph_driver=driver,
         )
 
-        await _graphiti_client.build_indices()
+        await _graphiti_client.build_indices_and_constraints()
         logger.info(f"Graphiti connected to {falkordb_uri}")
         return _graphiti_client
 
@@ -126,10 +133,14 @@ def create_graphiti_native_toolset(
             return "Knowledge graph unavailable. Information noted but not persisted."
 
         try:
+            from datetime import datetime, timezone
+
             await client.add_episode(
                 name=f"nexus-{source}",
                 episode_body=text,
                 source_description=f"NEXUS agent ({source})",
+                reference_time=datetime.now(timezone.utc),
+                group_id="nexus",
             )
             return f"Stored in knowledge graph: {text[:100]}..."
         except Exception as e:
@@ -155,7 +166,7 @@ def create_graphiti_native_toolset(
             return "Knowledge graph unavailable."
 
         try:
-            results = await client.search(query, num_results=num_results)
+            results = await client.search(query, num_results=num_results, group_ids=["nexus"])
             if not results:
                 return "No results found in knowledge graph."
 
