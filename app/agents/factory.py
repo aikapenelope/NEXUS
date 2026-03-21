@@ -40,9 +40,11 @@ from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 from app.tools.brain_toolset import create_brain_toolset
+from app.tools.coding_mcps import create_code_context_toolset, create_git_mcp_toolset
 from app.tools.github_toolset import create_github_toolset
 from app.tools.graphiti_native import create_graphiti_native_toolset
 from app.tools.langchain_tools import create_langchain_toolset
+from app.tools.playwright_toolset import create_playwright_toolset
 from app.tools.remember_toolset import create_remember_toolset
 
 logger = logging.getLogger(__name__)
@@ -310,9 +312,9 @@ def _resolve_skill_dirs(config: AgentConfig) -> list[str] | None:
 def _build_toolsets() -> list[Any]:
     """Build the list of custom toolsets for all agents.
 
-    Includes brain knowledge base, remember tool, Graphiti knowledge graph,
-    LangChain research tools, and GitHub (if configured).
-    All toolsets use lazy connections -- no init-time crashes.
+    Includes brain, remember, Graphiti, LangChain, GitHub, Git MCP,
+    code-context-provider, and Playwright. All use lazy connections
+    or graceful degradation -- no init-time crashes.
     """
     from pydantic_ai.toolsets import AbstractToolset
 
@@ -322,15 +324,17 @@ def _build_toolsets() -> list[Any]:
         create_graphiti_native_toolset(),  # Lazy connection, no crash if down
     ]
 
-    # LangChain tools (graceful degradation if not installed)
-    lc_toolset = create_langchain_toolset()
-    if lc_toolset is not None:
-        toolsets.append(lc_toolset)
-
-    # GitHub MCP (graceful degradation if token not set)
-    gh_toolset = create_github_toolset()
-    if gh_toolset is not None:
-        toolsets.append(gh_toolset)
+    # Optional toolsets (graceful degradation if not configured)
+    for factory in [
+        create_langchain_toolset,
+        create_github_toolset,
+        create_git_mcp_toolset,
+        create_code_context_toolset,
+        create_playwright_toolset,
+    ]:
+        toolset = factory()
+        if toolset is not None:
+            toolsets.append(toolset)
 
     return toolsets  # type: ignore[return-value]
 
