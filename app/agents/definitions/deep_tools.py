@@ -59,6 +59,28 @@ NEVER:
     context_manager=True,
     use_sandbox=True,
     skill_dir=None,
+    subagent_configs=[
+        {
+            "name": "test-writer",
+            "description": "Writes pytest tests for Python code. Delegate test writing here.",
+            "instructions": (
+                "You are a test engineer. Write comprehensive pytest tests for the "
+                "code provided. Include edge cases, error paths, and type checking. "
+                "Use fixtures and parametrize where appropriate. Every test must have "
+                "a clear docstring explaining what it verifies."
+            ),
+        },
+        {
+            "name": "linter",
+            "description": "Runs pyright and ruff, reports issues. Delegate type/lint checks here.",
+            "instructions": (
+                "You are a code quality checker. Run pyright for type checking and "
+                "ruff for linting on the specified files. Report all errors with file, "
+                "line number, and suggested fix. Group by severity: errors first, "
+                "then warnings."
+            ),
+        },
+    ],
     token_limit=100_000,
     cost_budget_usd=2.00,
 )
