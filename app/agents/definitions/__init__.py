@@ -1,12 +1,10 @@
 """Code-defined agent configurations for the NEXUS platform.
 
-Each module exports one or more AgentConfig objects. These are the production
-agents -- defined in code, version-controlled, reviewed before deployment.
+Agents are organized into two categories:
+  - CODING_AGENTS: For software engineering tasks (the core purpose)
+  - GENERAL_AGENTS: For research, content, monitoring (secondary)
 
-Usage:
-    from app.agents.definitions import AGENTS
-    config = AGENTS["research-analyst"]
-    result = await run_deep_agent(config, "Analyze the AI agent market")
+The AGENTS registry contains ALL agents for backward compatibility.
 """
 
 from app.agents.definitions.content_writer import CONTENT_WRITER
@@ -19,15 +17,14 @@ from app.agents.definitions.social_media import SOCIAL_MEDIA
 from app.agents.definitions.web_monitor import WEB_MONITOR
 from app.agents.factory import AgentConfig
 
-# Registry of all code-defined agents, keyed by name.
-AGENTS: dict[str, AgentConfig] = {}
+# ── Coding agents (primary purpose) ─────────────────────────────────
+CODING_AGENTS: dict[str, AgentConfig] = {}
+for _config in [DEVELOPER, CODER, REVIEWER, RESEARCHER]:
+    CODING_AGENTS[_config.name] = _config
 
-# Auto-register all agents from this package
+# ── General agents (secondary) ──────────────────────────────────────
+GENERAL_AGENTS: dict[str, AgentConfig] = {}
 for _config in [
-    CODER,
-    REVIEWER,
-    RESEARCHER,
-    DEVELOPER,
     RESEARCH_ANALYST,
     CONTENT_WRITER,
     WEB_MONITOR,
@@ -35,14 +32,19 @@ for _config in [
     SOCIAL_MEDIA,
     GENERAL_ASSISTANT,
 ]:
-    AGENTS[_config.name] = _config
+    GENERAL_AGENTS[_config.name] = _config
+
+# ── All agents (backward compatibility) ─────────────────────────────
+AGENTS: dict[str, AgentConfig] = {**CODING_AGENTS, **GENERAL_AGENTS}
 
 __all__ = [
     "AGENTS",
     "CODER",
+    "CODING_AGENTS",
     "CONTENT_WRITER",
     "DATA_ANALYST",
     "DEVELOPER",
+    "GENERAL_AGENTS",
     "GENERAL_ASSISTANT",
     "RESEARCH_ANALYST",
     "RESEARCHER",
