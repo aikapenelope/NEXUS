@@ -39,7 +39,8 @@ from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 from app.tools.brain_toolset import create_brain_toolset
-from app.tools.search_providers import get_search_provider
+from app.tools.langchain_tools import create_langchain_toolset
+from app.tools.remember_toolset import create_remember_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -289,12 +290,42 @@ def _resolve_skill_dirs(config: AgentConfig) -> list[str] | None:
     return dirs if dirs else None
 
 
+def _build_toolsets() -> list[Any]:
+    """Build the list of custom toolsets for all agents.
+
+    Includes brain knowledge base, remember tool, and LangChain research
+    tools (Wikipedia, Arxiv, PubMed) if available.
+    """
+    from pydantic_ai.toolsets import AbstractToolset
+
+    toolsets: list[AbstractToolset[Any]] = [
+        create_brain_toolset(),
+        create_remember_toolset(),
+    ]
+
+    # LangChain tools (graceful degradation if not installed)
+    lc_toolset = create_langchain_toolset()
+    if lc_toolset is not None:
+        toolsets.append(lc_toolset)
+
+    return toolsets  # type: ignore[return-value]
+
+
 def _resolve_context_files() -> list[str] | None:
-    """Resolve context files (DEEP.md) for system prompt injection."""
+    """Resolve context files for system prompt injection.
+
+    Includes DEEP.md (project context) and MEMORY.md (agent memory)
+    following the DeepResearch pattern.
+    """
+    files: list[str] = []
     deep_md = _WORKSPACE_DIR / "DEEP.md"
     if deep_md.is_file():
-        return [str(deep_md)]
-    return None
+        files.append(str(deep_md))
+    # MEMORY.md is always included -- pydantic-deep creates it when
+    # include_memory=True, and injecting it as a context file ensures
+    # the agent sees its accumulated knowledge at the start of each run.
+    files.append("/workspace/MEMORY.md")
+    return files if files else None
 
 
 # ---------------------------------------------------------------------------
@@ -355,18 +386,17 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         include_skills=config.include_skills,
         include_memory=config.include_memory,
         include_web=config.include_web,
-        # --- Web search provider (Tavily + DuckDuckGo fallback) ---
-        web_search_provider=get_search_provider() if config.include_web else None,
         include_execute=config.use_sandbox and config.include_filesystem,
-        # --- Fix 6: Plan mode + general-purpose subagent ---
+        # --- Fix 6: Plan mode + general-purpose subagent + teams ---
         include_plan=include_plan,
         include_general_purpose_subagent=include_general_purpose,
+        include_teams=config.include_subagents,
         # --- Subagent configs (pre-defined specialists) ---
         subagents=config.subagent_configs,  # type: ignore[arg-type]
         # --- Skills ---
         skill_directories=_resolve_skill_dirs(config),
-        # --- Custom toolsets (brain knowledge base) ---
-        toolsets=[create_brain_toolset()],
+        # --- Custom toolsets (brain + remember + LangChain research tools) ---
+        toolsets=_build_toolsets(),
         # --- Hooks (safety + audit) — matches vstorm full_app ---
         hooks=_HOOKS,
         # --- Middleware (audit stats + path blocking) ---
@@ -385,6 +415,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         max_checkpoints=20,
         # --- Context management ---
         context_manager=config.context_manager,
+        context_manager_max_tokens=200_000,
         # --- Cost tracking ---
         cost_tracking=True,
         cost_budget_usd=cost_budget,
