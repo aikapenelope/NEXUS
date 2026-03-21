@@ -29,10 +29,12 @@ from pydantic_deep import (
     HookEvent,
     HookInput,
     HookResult,
+    Skill,
     StateBackend,
     create_deep_agent,
     create_sliding_window_processor,
 )
+from pydantic_deep.types import SubAgentConfig
 
 from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
@@ -110,6 +112,73 @@ _sliding_window = create_sliding_window_processor(
 
 
 # ---------------------------------------------------------------------------
+# Cost tracking callback
+# ---------------------------------------------------------------------------
+
+
+async def _on_cost_update(cost_info: Any) -> None:
+    """Persist cost data to DB after each agent run.
+
+    Called by CostTrackingMiddleware. Best-effort: failures don't block.
+    """
+    try:
+        from app.traces import save_cost_event
+
+        await save_cost_event(
+            run_cost_usd=getattr(cost_info, "run_cost_usd", 0.0),
+            cumulative_cost_usd=getattr(cost_info, "cumulative_cost_usd", 0.0),
+            input_tokens=getattr(cost_info, "input_tokens", 0),
+            output_tokens=getattr(cost_info, "output_tokens", 0),
+        )
+    except Exception:
+        logger.debug("Cost tracking callback failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Programmatic skills (Skill dataclass instances)
+# ---------------------------------------------------------------------------
+
+# Platform reference skill -- tells agents what NEXUS can do.
+_NEXUS_REFERENCE_SKILL = Skill(
+    name="nexus-reference",
+    description="Quick reference for NEXUS platform capabilities, agents, and tools",
+    content="""\
+# NEXUS Platform Reference
+
+## Available Agents (code-defined)
+- **nexus-coder**: Senior engineer, writes code with tests (sandbox, subagents)
+- **nexus-reviewer**: Code reviewer for bugs, security, quality (sandbox)
+- **nexus-researcher**: Technical research with structured notes (sandbox, web)
+- **research-analyst**: Multi-source research with structured reports (web, memory)
+- **content-writer**: Publication-ready content with voice consistency (memory)
+- **web-monitor**: Tracks web page changes with memory-based diffing (web, memory)
+- **data-analyst**: Data analysis, visualization, statistical insights (web, memory)
+- **social-media**: Social media content creation and strategy (web, memory)
+- **general-assistant**: General-purpose assistant for any task (web, memory, subagents)
+
+## Tools Available to Agents
+- **Todo**: Task planning and progress tracking (write_todos, read_todos)
+- **Filesystem**: read_file, write_file, edit_file, glob, grep, ls
+- **Execute**: Shell command execution (sandbox only, requires approval)
+- **Web**: web_search, fetch_url, http_request
+- **Memory**: read_memory, write_memory, update_memory (MEMORY.md)
+- **Skills**: list_skills, load_skill, read_skill_resource
+- **Subagents**: delegate_task to specialized subagents
+- **Checkpoints**: save_checkpoint, rewind_to, list_checkpoints
+
+## Memory System (3 layers)
+1. **Chat history**: Per-conversation message persistence (nexus_messages)
+2. **Mem0 semantic**: Cross-session fact extraction via pgvector + Voyage AI
+3. **MEMORY.md**: Per-agent persistent knowledge file
+
+## Models
+- **Worker** (Groq GPT-OSS 20B): Fast, cheap -- research, extraction, content
+- **Analysis** (Claude Haiku 4.5): Smart -- complex analysis, code review, synthesis
+""",
+)
+
+
+# ---------------------------------------------------------------------------
 # AgentConfig model
 # ---------------------------------------------------------------------------
 
@@ -147,6 +216,12 @@ class AgentConfig(BaseModel):
     skill_dir: str | None = Field(
         default=None,
         description="Subdirectory under app/agents/knowledge/ for this agent's skills",
+    )
+
+    # Subagent configurations (SubAgentConfig dicts for the task tool)
+    subagent_configs: list[SubAgentConfig] | None = Field(
+        default=None,
+        description="Pre-configured subagents: [{name, description, instructions}, ...]",
     )
 
     # Limits
@@ -283,6 +358,8 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         # --- Fix 6: Plan mode + general-purpose subagent ---
         include_plan=include_plan,
         include_general_purpose_subagent=include_general_purpose,
+        # --- Subagent configs (pre-defined specialists) ---
+        subagents=config.subagent_configs,
         # --- Skills ---
         skill_directories=_resolve_skill_dirs(config),
         # --- Hooks (safety + audit) — matches vstorm full_app ---
@@ -306,6 +383,11 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         # --- Cost tracking ---
         cost_tracking=True,
         cost_budget_usd=cost_budget,
+        on_cost_update=_on_cost_update,
+        # --- Summarization model (use cheap Groq for context compression) ---
+        summarization_model=get_model_for_role("worker"),
+        # --- Programmatic skills ---
+        skills=[_NEXUS_REFERENCE_SKILL],
         # --- Human-in-the-loop ---
         interrupt_on=interrupt_on if interrupt_on else None,
     )
