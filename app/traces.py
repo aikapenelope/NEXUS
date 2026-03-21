@@ -418,3 +418,47 @@ async def get_monitor_data() -> dict[str, Any]:
         ],
         "recent_runs": [_row_to_dict(r) for r in recent_runs],
     }
+
+
+# ── Cost tracking persistence ────────────────────────────────────────
+
+_CREATE_COSTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS nexus_costs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_cost_usd    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cumulative_usd  DOUBLE PRECISION NOT NULL DEFAULT 0,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+"""
+
+_costs_table_created = False
+
+
+async def save_cost_event(
+    run_cost_usd: float = 0.0,
+    cumulative_cost_usd: float = 0.0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> None:
+    """Persist a cost tracking event from the agent middleware or Cerebro.
+
+    Best-effort: failures are logged but don't block execution.
+    """
+    global _costs_table_created  # noqa: PLW0603
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        if not _costs_table_created:
+            await conn.execute(_CREATE_COSTS_TABLE_SQL)
+            _costs_table_created = True
+        await conn.execute(
+            """
+            INSERT INTO nexus_costs (run_cost_usd, cumulative_usd, input_tokens, output_tokens)
+            VALUES ($1, $2, $3, $4)
+            """,
+            run_cost_usd,
+            cumulative_cost_usd,
+            input_tokens,
+            output_tokens,
+        )

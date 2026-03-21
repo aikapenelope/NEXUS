@@ -146,6 +146,12 @@ class AgentConfig(BaseModel):
         description="Run in Docker sandbox (isolated code execution).",
     )
 
+    # Per-agent skill directory (relative to app/agents/knowledge/)
+    skill_dir: str | None = Field(
+        default=None,
+        description="Subdirectory under app/agents/knowledge/ for this agent's skills",
+    )
+
     # Limits
     token_limit: int | None = Field(default=None, description="Max total tokens per run")
     cost_budget_usd: float | None = Field(default=None, description="Max USD cost per run")
@@ -240,10 +246,14 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
             keep=("messages", 30),
         )
 
-        # Resolve skills directory (only if it exists)
+        # Resolve skills directory: per-agent knowledge dir + shared fallback
         skill_dirs: list[str] | None = None
+        if config.skill_dir:
+            knowledge_dir = Path(__file__).parent / "knowledge" / config.skill_dir
+            if knowledge_dir.is_dir():
+                skill_dirs = [str(knowledge_dir)]
         if _SKILLS_DIR.is_dir():
-            skill_dirs = [str(_SKILLS_DIR)]
+            skill_dirs = (skill_dirs or []) + [str(_SKILLS_DIR)]
 
         # Resolve context files (only if DEEP.md exists)
         context_files: list[str] | None = None
@@ -318,35 +328,52 @@ async def run_agent(
     config: AgentConfig,
     prompt: str,
     user_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build an agent from config, run it with the given prompt, return results.
-
-    Delegates to run_deep_agent for full deep agent execution.
-    Returns a dict with the agent output and usage metadata.
-    """
-    return await run_deep_agent(config, prompt, user_id=user_id)
+    """Backward-compatible alias for run_deep_agent."""
+    return await run_deep_agent(
+        config, prompt, user_id=user_id, conversation_id=conversation_id
+    )
 
 
 async def run_deep_agent(
     config: AgentConfig,
     prompt: str,
     user_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build and run a full pydantic-deep agent (with sub-agents, tools, etc.).
+    """Build and run a pydantic-deep agent with unified 3-layer memory.
 
-    Results are cached in Redis by hash(agent_name + prompt) with a 5-minute
-    TTL.  Cache is best-effort: if Redis is down, the agent runs normally.
+    Memory layers (all best-effort, failures don't block execution):
 
-    Uses DockerBackend when config.use_sandbox is True, StateBackend otherwise.
+      Layer 1 — Chat history (nexus_messages):
+        If conversation_id is provided, loads recent messages as context
+        and saves the new exchange after the run.
+
+      Layer 2 — Mem0 semantic memory (pgvector):
+        If user_id is provided, searches for relevant facts and injects
+        them into the prompt. After the run, extracts new facts from the
+        exchange and stores them for cross-session retrieval.
+
+      Layer 3 — MEMORY.md (pydantic-deep built-in):
+        Handled internally by pydantic-deep when include_memory=True.
+        The agent reads/writes its own MEMORY.md file in the backend,
+        accumulating knowledge across runs.
+
+    Caching:
+      Results are cached in Redis by hash(agent_name + prompt) with a
+      5-minute TTL. Cache is skipped when conversation_id is provided
+      (conversational context makes caching unreliable).
 
     Returns a dict with the agent output and usage metadata.
     """
     from app.cache import get_cached_result, set_cached_result
 
-    # Check cache first
-    cached = await get_cached_result(config.name, prompt)
-    if cached is not None:
-        return cached
+    # Skip cache for conversational runs (context-dependent)
+    if not conversation_id:
+        cached = await get_cached_result(config.name, prompt)
+        if cached is not None:
+            return cached
 
     agent = build_agent(config)
     backend = _create_backend(config)
@@ -354,13 +381,34 @@ async def run_deep_agent(
 
     token_limit = _resolve_token_limit(config)
 
-    # Inject Mem0 semantic memory context if user_id is provided
-    enriched_prompt = prompt
+    # ── Layer 1: Load chat history ──────────────────────────────────
+    message_history_context = ""
+    if conversation_id:
+        try:
+            from app.conversations import get_messages
+
+            messages = await get_messages(conversation_id, limit=20)
+            if messages:
+                history_lines = [
+                    f"{m['role']}: {m['content'][:500]}" for m in messages
+                ]
+                message_history_context = (
+                    "Recent conversation history:\n"
+                    + "\n".join(history_lines)
+                    + "\n\n---\n\n"
+                )
+        except Exception:
+            pass  # Chat history is best-effort
+
+    # ── Layer 2: Inject Mem0 semantic memory ────────────────────────
+    semantic_context = ""
     if user_id:
         try:
             from app.memory import search_memory
 
-            memories = await search_memory(query=prompt, user_id=user_id, agent_id=config.name)
+            memories = await search_memory(
+                query=prompt, user_id=user_id, agent_id=config.name
+            )
             if memories:
                 memory_lines = [
                     m.get("memory", m.get("text", ""))
@@ -369,12 +417,19 @@ async def run_deep_agent(
                 ]
                 if memory_lines:
                     context = "\n".join(f"- {line}" for line in memory_lines)
-                    enriched_prompt = (
-                        f"Relevant memories about this user:\n{context}\n\n---\n\n{prompt}"
+                    semantic_context = (
+                        f"Relevant memories about this user:\n{context}\n\n---\n\n"
                     )
         except Exception:
-            pass  # Memory is best-effort, don't block agent execution
+            pass  # Semantic memory is best-effort
 
+    # ── Layer 3: MEMORY.md is handled by pydantic-deep internally ───
+    # (include_memory=True in the agent config enables this)
+
+    # Build the enriched prompt with all memory layers
+    enriched_prompt = f"{message_history_context}{semantic_context}{prompt}"
+
+    # ── Run the agent ───────────────────────────────────────────────
     result = await agent.run(
         enriched_prompt,
         deps=deps,
@@ -391,7 +446,40 @@ async def run_deep_agent(
         },
     }
 
-    # Cache the result (best-effort, non-blocking)
-    await set_cached_result(config.name, prompt, output)
+    # ── Post-run: persist to memory layers ──────────────────────────
+
+    # Layer 1: Save messages to chat history
+    if conversation_id:
+        try:
+            from app.conversations import add_message
+
+            await add_message(conversation_id, "user", prompt)
+            await add_message(
+                conversation_id, "assistant", result.output[:2000]
+            )
+        except Exception:
+            pass  # Chat persistence is best-effort
+
+    # Layer 2: Extract facts to Mem0 for cross-session retrieval
+    if user_id:
+        try:
+            from app.memory import add_memory
+
+            await add_memory(
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": result.output[:2000]},
+                ],
+                user_id=user_id,
+                agent_id=config.name,
+            )
+        except Exception:
+            pass  # Mem0 persistence is best-effort
+
+    # Layer 3: MEMORY.md updates are handled by pydantic-deep internally
+
+    # Cache the result (skip for conversational runs)
+    if not conversation_id:
+        await set_cached_result(config.name, prompt, output)
 
     return output
