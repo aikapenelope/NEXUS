@@ -1,0 +1,54 @@
+name: CI/CD — Build & Deploy NEXUS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  VPS_HOST: 89.167.96.99
+  VPS_USER: root
+  APP_DIR: /opt/nexus/app
+
+jobs:
+  lint:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: ruff check app/
+
+      - name: Pyright
+        run: pyright app/
+
+  deploy:
+    name: Deploy to VPS
+    needs: lint
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VPS_HOST }}
+          username: ${{ env.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ${{ env.APP_DIR }}
+            git pull origin main
+            docker compose up -d --build nexus-api
+            sleep 30
+            curl -sf http://localhost:8000/health || exit 1
+            echo "Deploy successful"
