@@ -122,10 +122,14 @@ User sends message
 | **pydantic-deep built-in** | read_file, write_file, edit_file, ls, glob, grep, execute, write_todos, read_todos, save_checkpoint, rewind_to, list_skills, load_skill, read_memory, write_memory, web_search, fetch_url, http_request, task (subagents), spawn_team, assign_task | pydantic-deep framework |
 | **brain_toolset** | search_knowledge, read_note, write_note, list_notes | Custom FunctionToolset |
 | **remember_toolset** | remember(fact) | Custom FunctionToolset |
+| **graphiti_native** | remember_knowledge, search_knowledge_graph | graphiti-core + FalkorDB (native Python, no MCP) |
 | **langchain_tools** | Wikipedia, Arxiv, PubMed | LangChain via Pydantic AI adapter |
-| **graphiti_toolset** | add_episode, search_facts, search_nodes, get_episodes | Graphiti MCP server |
+| **github_toolset** | repos, issues, PRs, files, branches, search | GitHub MCP Server via MCPServerStdio |
+| **git_mcp** | git_status, git_diff, git_log, git_commit, git_branch, search_code | @modelcontextprotocol/server-git via MCPServerStdio |
+| **code_context** | get_code_context (tree-sitter AST repo map) | code-context-provider-mcp via MCPServerStdio |
+| **playwright** | navigate, click, fill, screenshot, evaluate | Playwright MCP via MCPServerStreamableHTTP |
 
-### Skills (loaded on-demand)
+### Skills (20 total, loaded on-demand via progressive disclosure)
 
 | Skill | Source | Content |
 |-------|--------|---------|
@@ -133,6 +137,11 @@ User sends message
 | content | app/agents/knowledge/content/ | Content creation methodology |
 | monitoring | app/agents/knowledge/monitoring/ | Web monitoring methodology |
 | research | app/agents/knowledge/research/ | Research methodology |
+| python-fastapi | app/agents/knowledge/python-fastapi/ | Python 3.12, FastAPI, Pydantic AI, asyncpg patterns |
+| typescript-nextjs | app/agents/knowledge/typescript-nextjs/ | Next.js 15, App Router, CopilotKit, Tailwind |
+| docker-infra | app/agents/knowledge/docker-infra/ | Docker Compose inventory, networking, volumes |
+| hetzner-platform | app/agents/knowledge/hetzner-platform/ | Hetzner Cloud, Pulumi, 3-plane architecture |
+| postgres-pgvector | app/agents/knowledge/postgres-pgvector/ | PostgreSQL 17, asyncpg, vector operations |
 | 11 bundled skills | pydantic-deep package | build-and-compile, code-review, data-formats, environment-discovery, git-workflow, performant-code, refactor, skill-creator, systematic-debugging, test-writer, verification-strategy |
 
 ---
@@ -161,6 +170,8 @@ User sends message
 | POST | /workflows/{id}/run | Execute workflow |
 | GET | /mcp/servers | List MCP servers |
 | POST | /mcp/call | Call MCP tool |
+| **POST** | **/tasks/code** | **Devin-style: repo URL + task -> agent clones, works, returns diff** |
+| GET | /sessions | List active agent sessions |
 
 ### WebSocket (ws://localhost:8000/ws/agent)
 
@@ -265,52 +276,40 @@ Then open:
 
 ---
 
-## Production Roadmap: What's Missing for Devin-Level
+## Production Roadmap: What's Done and What's Next
 
-### Phase 1: Security & Auth (Critical)
-- [ ] Tailscale VPN on VPS (replace SSH-only firewall)
+### Completed
+- [x] Planning, filesystem, subagents, skills, memory, context management
+- [x] WebSocket streaming with tool calls, approvals, cancellation
+- [x] Session persistence (LocalBackend on disk, message history)
+- [x] Graphiti native toolset (graphiti-core + FalkorDB, no MCP)
+- [x] GitHub MCP Server (MCPServerStdio)
+- [x] Git MCP + code-context-provider-mcp (tree-sitter repo map)
+- [x] Playwright MCP toolset
+- [x] POST /tasks/code endpoint (Devin-style)
+- [x] 9 custom skills + 11 bundled = 20 skills
+- [x] Cost tracking, observability (Logfire + Phoenix)
+- [x] GitHub Actions CI/CD (lint + deploy)
+- [x] FalkorDB Browser UI (port 3001)
+
+### Phase 1: Security & Auth (Pending)
+- [ ] Tailscale VPN on VPS
 - [ ] API authentication (JWT or API key)
-- [ ] Real database credentials (not nexus:nexus)
-- [ ] Secrets in ESC, not hardcoded in docker-compose
+- [ ] Real database credentials
 - [ ] CORS restricted to actual domain
 
-### Phase 2: Session Persistence (High)
-- [ ] SessionManager with per-user backends (LocalBackend or DockerSandbox)
-- [ ] FileCheckpointStore for conversation save/rewind/fork
-- [ ] Session resume after disconnect (WebSocket reconnection)
-- [ ] Session timeout and cleanup (idle sessions auto-stop)
-
-### Phase 3: GitHub Integration (High)
-- [ ] Endpoint: POST /tasks/code — accepts repo URL + task description
-- [ ] Auto clone repo into sandbox, run agent, return diff
-- [ ] GitHub webhook: assign issue → agent creates PR
-- [ ] Branch protection: agent works on feature branches only
-
-### Phase 4: Frontend for Coding (Medium)
-- [ ] Rebuild frontend to consume WebSocket streaming
-- [ ] Real-time tool call visualization (file tree, terminal output)
+### Phase 2: Frontend Rebuild (Pending)
+- [ ] WebSocket streaming UI with tool call visualization
 - [ ] Approval UI for execute commands
 - [ ] Session list with resume capability
 - [ ] Diff viewer for code changes
 
-### Phase 5: Multi-User & Scaling (Medium)
-- [ ] Per-user session isolation (separate backends)
-- [ ] Concurrent agent runs (multiple users)
-- [ ] Queue system for long-running tasks (Prefect integration)
-- [ ] Resource limits per user (token budgets, sandbox limits)
-
-### Phase 6: Agent Quality (Ongoing)
-- [ ] Eval suite: run nexus-developer against SWE-bench subset
-- [ ] A/B test different models (Sonnet vs GPT-4.1 vs Groq)
-- [ ] Custom skills per project (auto-discover from repo)
-- [ ] Agent learning: Graphiti accumulates project knowledge over time
-- [ ] Error recovery: auto-retry with different approach on failure
-
-### Phase 7: Deploy Automation (Low)
-- [ ] GitHub Actions: push to main → build → deploy to VPS
-- [ ] Health check monitoring with alerts
-- [ ] Automated backups (Postgres, Graphiti, MEMORY.md)
-- [ ] Log aggregation (structured JSON → Loki or similar)
+### Phase 3: Agent Quality (Ongoing)
+- [ ] Eval suite: SWE-bench subset
+- [ ] End-to-end sandbox testing (clone, edit, test, iterate)
+- [ ] Subagent verification (nesting, context, results)
+- [ ] Error recovery: auto-retry with different approach
+- [ ] Agent learning: Graphiti accumulates project knowledge
 
 ---
 
