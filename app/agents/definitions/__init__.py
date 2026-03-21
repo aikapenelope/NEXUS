@@ -12,6 +12,7 @@ Usage:
 from app.agents.definitions.content_writer import CONTENT_WRITER
 from app.agents.definitions.data_analyst import DATA_ANALYST
 from app.agents.definitions.deep_tools import CODER, RESEARCHER, REVIEWER
+from app.agents.definitions.developer import DEVELOPER
 from app.agents.definitions.general_assistant import GENERAL_ASSISTANT
 from app.agents.definitions.research_analyst import RESEARCH_ANALYST
 from app.agents.definitions.social_media import SOCIAL_MEDIA
@@ -26,6 +27,7 @@ for _config in [
     CODER,
     REVIEWER,
     RESEARCHER,
+    DEVELOPER,
     RESEARCH_ANALYST,
     CONTENT_WRITER,
     WEB_MONITOR,
@@ -40,6 +42,7 @@ __all__ = [
     "CODER",
     "CONTENT_WRITER",
     "DATA_ANALYST",
+    "DEVELOPER",
     "GENERAL_ASSISTANT",
     "RESEARCH_ANALYST",
     "RESEARCHER",
