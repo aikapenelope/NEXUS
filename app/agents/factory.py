@@ -35,6 +35,7 @@ from pydantic_deep import (
     create_sliding_window_processor,
 )
 
+from app.agents.deep.loop_detection import LoopDetectionMiddleware
 from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
@@ -106,6 +107,7 @@ _HOOKS = [
 # Module-level middleware instances (shared across agents, stateless).
 _audit_mw = AuditMiddleware()
 _permission_mw = PermissionMiddleware()
+_loop_detection_mw = LoopDetectionMiddleware(max_repeats=3, window_size=15)
 
 # Sliding window processor (shared, stateless).
 _sliding_window = create_sliding_window_processor(
@@ -280,14 +282,27 @@ def _create_backend(config: AgentConfig) -> StateBackend | Any:
 
 
 def _resolve_skill_dirs(config: AgentConfig) -> list[str] | None:
-    """Resolve skill directories: per-agent knowledge dir + shared fallback."""
+    """Resolve skill directories: per-agent knowledge > shared > bundled fallback.
+
+    Follows vstorm CLI pattern: if no custom skills found, falls back to
+    pydantic-deep's bundled_skills (11 coding skills shipped with the package).
+    """
     dirs: list[str] = []
+    # Per-agent knowledge directory
     if config.skill_dir:
         knowledge_dir = Path(__file__).parent / "knowledge" / config.skill_dir
         if knowledge_dir.is_dir():
             dirs.append(str(knowledge_dir))
+    # Shared skills (deep/skills/)
     if _SKILLS_DIR.is_dir():
         dirs.append(str(_SKILLS_DIR))
+    # Bundled skills fallback (shipped with pydantic-deep package)
+    if not dirs:
+        import pydantic_deep
+
+        bundled = Path(pydantic_deep.__file__).parent / "bundled_skills"
+        if bundled.is_dir():
+            dirs.append(str(bundled))
     return dirs if dirs else None
 
 
@@ -405,8 +420,8 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         toolsets=_build_toolsets(),
         # --- Hooks (safety + audit) — matches vstorm full_app ---
         hooks=_HOOKS,
-        # --- Middleware (audit stats + path blocking) ---
-        middleware=[_audit_mw, _permission_mw],
+        # --- Middleware (audit + permissions + loop detection) ---
+        middleware=[_audit_mw, _permission_mw, _loop_detection_mw],
         # --- Processors ---
         eviction_token_limit=20000,
         patch_tool_calls=True,
@@ -422,6 +437,18 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         # --- Context management ---
         context_manager=config.context_manager,
         context_manager_max_tokens=200_000,
+        # --- Context discovery (auto-find AGENTS.md, CLAUDE.md, DEEP.md) ---
+        context_discovery=True,
+        # --- Output style (concise for coding, no preamble) ---
+        output_style="concise",
+        # --- Memory directory (persistent across sessions) ---
+        memory_dir=".pydantic-deep",
+        # --- Plans directory (planner subagent saves plans here) ---
+        plans_dir=".pydantic-deep/plans",
+        # --- History persistence (messages survive restarts) ---
+        history_messages_path=".pydantic-deep/messages.json",
+        # --- Subagent nesting (subagents can delegate 1 level deep) ---
+        max_nesting_depth=1,
         # --- Cost tracking ---
         cost_tracking=True,
         cost_budget_usd=cost_budget,
