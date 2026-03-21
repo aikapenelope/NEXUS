@@ -186,10 +186,40 @@ services:
     networks:
       - nexus-net
 
+  # ── Graphiti (temporal knowledge graph + MCP server) ──────────────
+  # FalkorDB + Graphiti MCP in a single container.
+  # Provides temporal knowledge graph memory for agents via MCP protocol.
+  # MCP endpoint: http://graphiti:8000/mcp/
+  # FalkorDB (Redis protocol): localhost:6380
+  graphiti:
+    image: zepai/knowledge-graph-mcp:latest
+    container_name: nexus-graphiti
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1
+    ports:
+      - "127.0.0.1:8001:8000"
+      - "127.0.0.1:6380:6379"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GRAPHITI_GROUP_ID=nexus
+      - GRAPHITI_TELEMETRY_ENABLED=false
+    volumes:
+      - graphiti-data:/data
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - nexus-net
+
 volumes:
   postgres-data:
   redis-data:
   phoenix-data:
+  graphiti-data:
 
 networks:
   nexus-net:
