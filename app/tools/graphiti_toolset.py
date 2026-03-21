@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import os
 
-from pydantic_ai.mcp import MCPServerSSE
+from pydantic_ai.mcp import MCPServerStreamableHTTP
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_GRAPHITI_URL = "http://graphiti:8000/mcp"
 
 
-def create_graphiti_toolset() -> MCPServerSSE | None:
+def create_graphiti_toolset() -> MCPServerStreamableHTTP | None:
     """Create an MCP toolset connected to the Graphiti knowledge graph server.
 
     Returns None if the GRAPHITI_MCP_URL env var is explicitly set to empty,
@@ -46,4 +46,4 @@ def create_graphiti_toolset() -> MCPServerSSE | None:
         return None
 
     logger.info(f"Graphiti MCP toolset configured: {url}")
-    return MCPServerSSE(url=url)
+    return MCPServerStreamableHTTP(url=url)
