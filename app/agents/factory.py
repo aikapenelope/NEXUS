@@ -4,19 +4,115 @@ Supports two execution backends:
   - StateBackend (in-memory): For simple agents without filesystem access.
   - DockerBackend (sandbox): For deep agents that need isolated code execution.
     Requires Docker socket mount and the nexus-sandbox image.
+
+Deep agents (use_sandbox=True) get production-grade features matching the
+pydantic-deep full_app reference implementation:
+  - Hooks: safety_gate (blocks dangerous commands) + audit_logger (logs tool calls)
+  - Middleware: AuditMiddleware (tool stats) + PermissionMiddleware (path blocking)
+  - Processors: EvictionProcessor, SlidingWindowProcessor, PatchToolCallsProcessor
+  - Checkpointing: save/rewind/fork conversations
+  - Context files: DEEP.md injected into system prompt
+  - Image support: multimodal read_file for images
+  - Shell execution: execute tool with human-in-the-loop approval
 """
 
 from __future__ import annotations
 
+import logging
+import re
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
-from pydantic_deep import DeepAgentDeps, StateBackend, create_deep_agent
+from pydantic_deep import (
+    DeepAgentDeps,
+    Hook,
+    HookEvent,
+    HookInput,
+    HookResult,
+    StateBackend,
+    create_deep_agent,
+    create_sliding_window_processor,
+)
 
 from app.config import settings
 from app.models import get_model_for_role
+
+logger = logging.getLogger(__name__)
+
+# Path to skills and workspace context files (relative to this module).
+_DEEP_DIR = Path(__file__).parent / "deep"
+_SKILLS_DIR = _DEEP_DIR / "skills"
+_WORKSPACE_DIR = _DEEP_DIR / "workspace"
+
+
+# ---------------------------------------------------------------------------
+# Hooks (Claude Code-style lifecycle hooks) — identical to Vstorm full_app
+# ---------------------------------------------------------------------------
+
+
+async def _audit_logger_handler(hook_input: HookInput) -> HookResult:
+    """Background POST_TOOL_USE hook: logs all tool calls.
+
+    Runs as fire-and-forget (non-blocking) so it doesn't slow down the agent.
+    """
+    args_preview = str(hook_input.tool_input)[:200]
+    logger.info(f"HOOK AUDIT: {hook_input.tool_name}({args_preview})")
+    return HookResult(allow=True)
+
+
+async def _safety_gate_handler(hook_input: HookInput) -> HookResult:
+    """PRE_TOOL_USE hook: blocks dangerous commands in execute tool.
+
+    Returns allow=False to prevent the tool from executing when the command
+    matches a dangerous pattern.  Only matches the 'execute' tool.
+    """
+    command = hook_input.tool_input.get("command", "")
+
+    dangerous_patterns = [
+        r"rm\s+-rf\s+/",
+        r"rm\s+-rf\s+\*",
+        r"mkfs\.",
+        r"dd\s+if=.*of=/dev/",
+        r"chmod\s+-R\s+777\s+/",
+        r":\(\)\{",  # fork bomb
+    ]
+
+    for pattern in dangerous_patterns:
+        if re.search(pattern, command):
+            return HookResult(
+                allow=False,
+                reason=(
+                    f"BLOCKED: Command matches dangerous pattern. "
+                    f"The command '{command}' was blocked for safety."
+                ),
+            )
+
+    return HookResult(allow=True)
+
+
+_DEEP_AGENT_HOOKS = [
+    # Background audit logger — fires after every tool completes
+    Hook(
+        event=HookEvent.POST_TOOL_USE,
+        handler=_audit_logger_handler,
+        background=True,
+    ),
+    # Safety gate — blocks dangerous execute commands (blocking, not background)
+    Hook(
+        event=HookEvent.PRE_TOOL_USE,
+        handler=_safety_gate_handler,
+        matcher="execute",
+        timeout=5,
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# AgentConfig model
+# ---------------------------------------------------------------------------
 
 
 class AgentConfig(BaseModel):
@@ -53,6 +149,11 @@ class AgentConfig(BaseModel):
     # Limits
     token_limit: int | None = Field(default=None, description="Max total tokens per run")
     cost_budget_usd: float | None = Field(default=None, description="Max USD cost per run")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _resolve_token_limit(config: AgentConfig) -> int:
@@ -100,11 +201,18 @@ def _create_backend(config: AgentConfig) -> StateBackend | Any:
     return StateBackend()
 
 
+# ---------------------------------------------------------------------------
+# Agent builder
+# ---------------------------------------------------------------------------
+
+
 def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
     """Instantiate a pydantic-deep agent from an AgentConfig.
 
-    Applies model routing based on role, enforces token limits via
-    UsageLimits, and sets cost_budget_usd for the cost tracking middleware.
+    Simple agents (use_sandbox=False) get basic features only.
+    Deep agents (use_sandbox=True) get full production features matching
+    the pydantic-deep full_app reference: hooks, middleware, processors,
+    checkpointing, context files, image support, and shell execution.
     """
     model = get_model_for_role(config.role)
     cost_budget = _resolve_cost_budget(config)
@@ -118,7 +226,73 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
     if config.include_web:
         interrupt_on = {"web_search": False}
 
-    agent: Agent[DeepAgentDeps, str] = create_deep_agent(
+    # --- Deep agent (sandbox): add production features ---
+    if config.use_sandbox and config.include_filesystem:
+        from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
+
+        # Merge interrupt_on with execute approval
+        sandbox_interrupt = dict(interrupt_on or {})
+        sandbox_interrupt["execute"] = True
+
+        # Sliding window processor for long conversations
+        sliding_window = create_sliding_window_processor(
+            trigger=("messages", 50),
+            keep=("messages", 30),
+        )
+
+        # Resolve skills directory (only if it exists)
+        skill_dirs: list[str] | None = None
+        if _SKILLS_DIR.is_dir():
+            skill_dirs = [str(_SKILLS_DIR)]
+
+        # Resolve context files (only if DEEP.md exists)
+        context_files: list[str] | None = None
+        deep_md = _WORKSPACE_DIR / "DEEP.md"
+        if deep_md.is_file():
+            context_files = ["/workspace/DEEP.md"]
+
+        agent: Agent[DeepAgentDeps, str] = create_deep_agent(
+            model=model,
+            instructions=config.instructions,
+            backend=None,  # Backend comes from deps at runtime
+            # --- Toolsets ---
+            include_todo=config.include_todo,
+            include_filesystem=config.include_filesystem,
+            include_subagents=config.include_subagents,
+            include_skills=config.include_skills,
+            include_memory=config.include_memory,
+            include_web=config.include_web,
+            include_execute=True,
+            # --- Skills (SKILL.md files from Vstorm) ---
+            skill_directories=skill_dirs,
+            # --- Hooks (safety + audit, identical to Vstorm full_app) ---
+            hooks=_DEEP_AGENT_HOOKS,
+            # --- Middleware (audit stats + path blocking) ---
+            middleware=[AuditMiddleware(), PermissionMiddleware()],
+            # --- Processors ---
+            eviction_token_limit=20000,
+            patch_tool_calls=True,
+            history_processors=[sliding_window],
+            # --- Context files (DEEP.md auto-injection) ---
+            context_files=context_files,
+            # --- Image support (multimodal read_file) ---
+            image_support=True,
+            # --- Checkpointing (save/rewind/fork) ---
+            include_checkpoints=True,
+            checkpoint_frequency="every_turn",
+            max_checkpoints=20,
+            # --- Context management ---
+            context_manager=config.context_manager,
+            # --- Cost tracking ---
+            cost_tracking=True,
+            cost_budget_usd=cost_budget,
+            # --- Human-in-the-loop ---
+            interrupt_on=sandbox_interrupt,
+        )
+        return agent
+
+    # --- Simple agent (no sandbox): basic features only ---
+    agent = create_deep_agent(
         model=model,
         instructions=config.instructions,
         include_todo=config.include_todo,
@@ -133,6 +307,11 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         interrupt_on=interrupt_on,
     )
     return agent
+
+
+# ---------------------------------------------------------------------------
+# Agent runner
+# ---------------------------------------------------------------------------
 
 
 async def run_agent(
