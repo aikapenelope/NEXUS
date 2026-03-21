@@ -1,19 +1,15 @@
 """Agent factory: builds pydantic-deep agents from declarative AgentConfig objects.
 
-Supports two execution backends:
-  - StateBackend (in-memory): For simple agents without filesystem access.
-  - DockerBackend (sandbox): For deep agents that need isolated code execution.
-    Requires Docker socket mount and the nexus-sandbox image.
+Aligned with vstorm full_app reference and Pydantic AI best practices:
+  - Single unified path: ALL agents get production features (hooks, middleware,
+    processors, checkpointing, cost tracking) regardless of backend.
+  - BASE_PROMPT as foundation for all agent instructions.
+  - UsageLimits with request_limit + tool_calls_limit (not just token limit).
+  - Backend selection is the ONLY difference between sandbox and non-sandbox.
 
-Deep agents (use_sandbox=True) get production-grade features matching the
-pydantic-deep full_app reference implementation:
-  - Hooks: safety_gate (blocks dangerous commands) + audit_logger (logs tool calls)
-  - Middleware: AuditMiddleware (tool stats) + PermissionMiddleware (path blocking)
-  - Processors: EvictionProcessor, SlidingWindowProcessor, PatchToolCallsProcessor
-  - Checkpointing: save/rewind/fork conversations
-  - Context files: DEEP.md injected into system prompt
-  - Image support: multimodal read_file for images
-  - Shell execution: execute tool with human-in-the-loop approval
+Backend selection:
+  - use_sandbox=True + include_filesystem=True -> DockerSandbox
+  - Otherwise -> StateBackend (in-memory)
 """
 
 from __future__ import annotations
@@ -27,6 +23,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 from pydantic_deep import (
+    BASE_PROMPT,
     DeepAgentDeps,
     Hook,
     HookEvent,
@@ -37,6 +34,7 @@ from pydantic_deep import (
     create_sliding_window_processor,
 )
 
+from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 
@@ -49,26 +47,19 @@ _WORKSPACE_DIR = _DEEP_DIR / "workspace"
 
 
 # ---------------------------------------------------------------------------
-# Hooks (Claude Code-style lifecycle hooks) — identical to Vstorm full_app
+# Hooks (Claude Code-style lifecycle hooks) — matches vstorm full_app
 # ---------------------------------------------------------------------------
 
 
 async def _audit_logger_handler(hook_input: HookInput) -> HookResult:
-    """Background POST_TOOL_USE hook: logs all tool calls.
-
-    Runs as fire-and-forget (non-blocking) so it doesn't slow down the agent.
-    """
+    """Background POST_TOOL_USE hook: logs all tool calls."""
     args_preview = str(hook_input.tool_input)[:200]
     logger.info(f"HOOK AUDIT: {hook_input.tool_name}({args_preview})")
     return HookResult(allow=True)
 
 
 async def _safety_gate_handler(hook_input: HookInput) -> HookResult:
-    """PRE_TOOL_USE hook: blocks dangerous commands in execute tool.
-
-    Returns allow=False to prevent the tool from executing when the command
-    matches a dangerous pattern.  Only matches the 'execute' tool.
-    """
+    """PRE_TOOL_USE hook: blocks dangerous commands in execute tool."""
     command = hook_input.tool_input.get("command", "")
 
     dangerous_patterns = [
@@ -93,14 +84,12 @@ async def _safety_gate_handler(hook_input: HookInput) -> HookResult:
     return HookResult(allow=True)
 
 
-_DEEP_AGENT_HOOKS = [
-    # Background audit logger — fires after every tool completes
+_HOOKS = [
     Hook(
         event=HookEvent.POST_TOOL_USE,
         handler=_audit_logger_handler,
         background=True,
     ),
-    # Safety gate — blocks dangerous execute commands (blocking, not background)
     Hook(
         event=HookEvent.PRE_TOOL_USE,
         handler=_safety_gate_handler,
@@ -108,6 +97,16 @@ _DEEP_AGENT_HOOKS = [
         timeout=5,
     ),
 ]
+
+# Module-level middleware instances (shared across agents, stateless).
+_audit_mw = AuditMiddleware()
+_permission_mw = PermissionMiddleware()
+
+# Sliding window processor (shared, stateless).
+_sliding_window = create_sliding_window_processor(
+    trigger=("messages", 50),
+    keep=("messages", 30),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +117,7 @@ _DEEP_AGENT_HOOKS = [
 class AgentConfig(BaseModel):
     """Declarative configuration for building a NEXUS agent.
 
-    This is the output of the builder agent: a natural-language description
-    gets translated into one of these, which then maps directly to
-    create_deep_agent() parameters.
+    Every agent gets the full production feature set regardless of backend.
     """
 
     name: str = Field(description="Short identifier for the agent")
@@ -136,7 +133,7 @@ class AgentConfig(BaseModel):
     include_filesystem: bool = Field(default=False, description="Enable file read/write")
     include_subagents: bool = Field(default=False, description="Enable sub-agent delegation")
     include_skills: bool = Field(default=False, description="Enable skill loading")
-    include_memory: bool = Field(default=False, description="Enable persistent MEMORY.md")
+    include_memory: bool = Field(default=True, description="Enable persistent MEMORY.md")
     include_web: bool = Field(default=False, description="Enable web search/fetch tools")
     context_manager: bool = Field(default=True, description="Enable auto context compression")
 
@@ -187,9 +184,7 @@ def _resolve_cost_budget(config: AgentConfig) -> float:
 def _create_backend(config: AgentConfig) -> StateBackend | Any:
     """Create the appropriate backend for the agent.
 
-    Returns DockerSandbox for sandboxed agents, StateBackend otherwise.
-    DockerSandbox is imported lazily to avoid hard dependency on docker package
-    when not using sandbox mode.
+    DockerSandbox for sandboxed agents with filesystem, StateBackend otherwise.
     """
     if config.use_sandbox and config.include_filesystem:
         try:
@@ -202,119 +197,117 @@ def _create_backend(config: AgentConfig) -> StateBackend | Any:
                 idle_timeout=settings.sandbox_timeout,
             )
         except ImportError:
-            # Fallback if sandbox extra not installed
             pass
     return StateBackend()
 
 
+def _resolve_skill_dirs(config: AgentConfig) -> list[str] | None:
+    """Resolve skill directories: per-agent knowledge dir + shared fallback."""
+    dirs: list[str] = []
+    if config.skill_dir:
+        knowledge_dir = Path(__file__).parent / "knowledge" / config.skill_dir
+        if knowledge_dir.is_dir():
+            dirs.append(str(knowledge_dir))
+    if _SKILLS_DIR.is_dir():
+        dirs.append(str(_SKILLS_DIR))
+    return dirs if dirs else None
+
+
+def _resolve_context_files() -> list[str] | None:
+    """Resolve context files (DEEP.md) for system prompt injection."""
+    deep_md = _WORKSPACE_DIR / "DEEP.md"
+    if deep_md.is_file():
+        return [str(deep_md)]
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Agent builder
+# Fix 2: BASE_PROMPT as foundation for all instructions
+# ---------------------------------------------------------------------------
+
+
+def _build_instructions(config: AgentConfig) -> str:
+    """Prepend BASE_PROMPT to agent instructions.
+
+    Following vstorm full_app pattern: BASE_PROMPT provides the core deep
+    agent behavior (be concise, bias towards action, use tools, etc.) and
+    the agent's custom instructions extend it.
+    """
+    if not config.instructions:
+        return BASE_PROMPT
+    return f"{BASE_PROMPT}\n\n{config.instructions}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: Single unified agent builder — ALL agents get production features
 # ---------------------------------------------------------------------------
 
 
 def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
     """Instantiate a pydantic-deep agent from an AgentConfig.
 
-    Simple agents (use_sandbox=False) get basic features only.
-    Deep agents (use_sandbox=True) get full production features matching
-    the pydantic-deep full_app reference: hooks, middleware, processors,
-    checkpointing, context files, image support, and shell execution.
+    Every agent gets the full production feature set: hooks, middleware,
+    processors, checkpointing, cost tracking, context files, image support.
+    The only difference between sandbox and non-sandbox is the backend and
+    whether the execute tool is included.
     """
     model = get_model_for_role(config.role)
     cost_budget = _resolve_cost_budget(config)
 
-    # Disable web_search approval to prevent DeferredToolRequests from being
-    # added to the agent's output_type.  When DeferredToolRequests is in the
-    # union, AG-UI streaming and the copilot context cannot handle the output
-    # correctly, causing runtime failures.  Setting web_search=False in
-    # interrupt_on keeps the web tools available without the deferred wrapper.
-    interrupt_on: dict[str, bool] | None = None
+    # Interrupt-on configuration
+    interrupt_on: dict[str, bool] = {}
     if config.include_web:
-        interrupt_on = {"web_search": False}
-
-    # --- Deep agent (sandbox): add production features ---
+        # Disable web_search approval to prevent DeferredToolRequests from
+        # breaking AG-UI streaming.
+        interrupt_on["web_search"] = False
     if config.use_sandbox and config.include_filesystem:
-        from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
+        interrupt_on["execute"] = True
 
-        # Merge interrupt_on with execute approval
-        sandbox_interrupt = dict(interrupt_on or {})
-        sandbox_interrupt["execute"] = True
+    # Fix 5: include_plan and include_general_purpose_subagent for
+    # agents that use subagents (matches vstorm full_app reference).
+    include_plan = config.include_subagents
+    include_general_purpose = config.include_subagents
 
-        # Sliding window processor for long conversations
-        sliding_window = create_sliding_window_processor(
-            trigger=("messages", 50),
-            keep=("messages", 30),
-        )
-
-        # Resolve skills directory: per-agent knowledge dir + shared fallback
-        skill_dirs: list[str] | None = None
-        if config.skill_dir:
-            knowledge_dir = Path(__file__).parent / "knowledge" / config.skill_dir
-            if knowledge_dir.is_dir():
-                skill_dirs = [str(knowledge_dir)]
-        if _SKILLS_DIR.is_dir():
-            skill_dirs = (skill_dirs or []) + [str(_SKILLS_DIR)]
-
-        # Resolve context files (only if DEEP.md exists)
-        context_files: list[str] | None = None
-        deep_md = _WORKSPACE_DIR / "DEEP.md"
-        if deep_md.is_file():
-            context_files = ["/workspace/DEEP.md"]
-
-        agent: Agent[DeepAgentDeps, str] = create_deep_agent(
-            model=model,
-            instructions=config.instructions,
-            backend=None,  # Backend comes from deps at runtime
-            # --- Toolsets ---
-            include_todo=config.include_todo,
-            include_filesystem=config.include_filesystem,
-            include_subagents=config.include_subagents,
-            include_skills=config.include_skills,
-            include_memory=config.include_memory,
-            include_web=config.include_web,
-            include_execute=True,
-            # --- Skills (SKILL.md files from Vstorm) ---
-            skill_directories=skill_dirs,
-            # --- Hooks (safety + audit, identical to Vstorm full_app) ---
-            hooks=_DEEP_AGENT_HOOKS,
-            # --- Middleware (audit stats + path blocking) ---
-            middleware=[AuditMiddleware(), PermissionMiddleware()],
-            # --- Processors ---
-            eviction_token_limit=20000,
-            patch_tool_calls=True,
-            history_processors=[sliding_window],
-            # --- Context files (DEEP.md auto-injection) ---
-            context_files=context_files,
-            # --- Image support (multimodal read_file) ---
-            image_support=True,
-            # --- Checkpointing (save/rewind/fork) ---
-            include_checkpoints=True,
-            checkpoint_frequency="every_turn",
-            max_checkpoints=20,
-            # --- Context management ---
-            context_manager=config.context_manager,
-            # --- Cost tracking ---
-            cost_tracking=True,
-            cost_budget_usd=cost_budget,
-            # --- Human-in-the-loop ---
-            interrupt_on=sandbox_interrupt,
-        )
-        return agent
-
-    # --- Simple agent (no sandbox): basic features only ---
-    agent = create_deep_agent(
+    agent: Agent[DeepAgentDeps, str] = create_deep_agent(
         model=model,
-        instructions=config.instructions,
+        instructions=_build_instructions(config),
+        backend=None,  # Backend comes from deps at runtime
+        # --- Toolsets ---
         include_todo=config.include_todo,
         include_filesystem=config.include_filesystem,
         include_subagents=config.include_subagents,
         include_skills=config.include_skills,
         include_memory=config.include_memory,
         include_web=config.include_web,
+        include_execute=config.use_sandbox and config.include_filesystem,
+        # --- Fix 6: Plan mode + general-purpose subagent ---
+        include_plan=include_plan,
+        include_general_purpose_subagent=include_general_purpose,
+        # --- Skills ---
+        skill_directories=_resolve_skill_dirs(config),
+        # --- Hooks (safety + audit) — matches vstorm full_app ---
+        hooks=_HOOKS,
+        # --- Middleware (audit stats + path blocking) ---
+        middleware=[_audit_mw, _permission_mw],
+        # --- Processors ---
+        eviction_token_limit=20000,
+        patch_tool_calls=True,
+        history_processors=[_sliding_window],
+        # --- Context files (DEEP.md injection) ---
+        context_files=_resolve_context_files(),
+        # --- Image support ---
+        image_support=True,
+        # --- Checkpointing ---
+        include_checkpoints=True,
+        checkpoint_frequency="every_turn",
+        max_checkpoints=20,
+        # --- Context management ---
         context_manager=config.context_manager,
+        # --- Cost tracking ---
         cost_tracking=True,
         cost_budget_usd=cost_budget,
-        interrupt_on=interrupt_on,
+        # --- Human-in-the-loop ---
+        interrupt_on=interrupt_on if interrupt_on else None,
     )
     return agent
 
@@ -346,24 +339,16 @@ async def run_deep_agent(
 
     Memory layers (all best-effort, failures don't block execution):
 
-      Layer 1 — Chat history (nexus_messages):
-        If conversation_id is provided, loads recent messages as context
-        and saves the new exchange after the run.
+      Layer 1 -- Chat history (nexus_messages):
+        If conversation_id is provided, loads recent messages and passes
+        them as native message_history to agent.run() (not text injection).
 
-      Layer 2 — Mem0 semantic memory (pgvector):
+      Layer 2 -- Mem0 semantic memory (pgvector):
         If user_id is provided, searches for relevant facts and injects
-        them into the prompt. After the run, extracts new facts from the
-        exchange and stores them for cross-session retrieval.
+        them into the prompt. After the run, extracts new facts.
 
-      Layer 3 — MEMORY.md (pydantic-deep built-in):
-        Handled internally by pydantic-deep when include_memory=True.
-        The agent reads/writes its own MEMORY.md file in the backend,
-        accumulating knowledge across runs.
-
-    Caching:
-      Results are cached in Redis by hash(agent_name + prompt) with a
-      5-minute TTL. Cache is skipped when conversation_id is provided
-      (conversational context makes caching unreliable).
+      Layer 3 -- MEMORY.md (pydantic-deep built-in):
+        Handled internally when include_memory=True.
 
     Returns a dict with the agent output and usage metadata.
     """
@@ -381,27 +366,8 @@ async def run_deep_agent(
 
     token_limit = _resolve_token_limit(config)
 
-    # ── Layer 1: Load chat history ──────────────────────────────────
-    message_history_context = ""
-    if conversation_id:
-        try:
-            from app.conversations import get_messages
-
-            messages = await get_messages(conversation_id, limit=20)
-            if messages:
-                history_lines = [
-                    f"{m['role']}: {m['content'][:500]}" for m in messages
-                ]
-                message_history_context = (
-                    "Recent conversation history:\n"
-                    + "\n".join(history_lines)
-                    + "\n\n---\n\n"
-                )
-        except Exception:
-            pass  # Chat history is best-effort
-
-    # ── Layer 2: Inject Mem0 semantic memory ────────────────────────
-    semantic_context = ""
+    # ── Layer 2: Inject Mem0 semantic memory into prompt ────────────
+    enriched_prompt = prompt
     if user_id:
         try:
             from app.memory import search_memory
@@ -417,23 +383,26 @@ async def run_deep_agent(
                 ]
                 if memory_lines:
                     context = "\n".join(f"- {line}" for line in memory_lines)
-                    semantic_context = (
-                        f"Relevant memories about this user:\n{context}\n\n---\n\n"
+                    enriched_prompt = (
+                        f"Relevant memories about this user:\n{context}\n\n---\n\n{prompt}"
                     )
         except Exception:
             pass  # Semantic memory is best-effort
 
-    # ── Layer 3: MEMORY.md is handled by pydantic-deep internally ───
-    # (include_memory=True in the agent config enables this)
+    # ── Layer 3: MEMORY.md handled by pydantic-deep internally ──────
 
-    # Build the enriched prompt with all memory layers
-    enriched_prompt = f"{message_history_context}{semantic_context}{prompt}"
+    # ── Fix 4: UsageLimits with request_limit + tool_calls_limit ────
+    usage_limits = UsageLimits(
+        total_tokens_limit=token_limit,
+        request_limit=50,  # Prevent infinite loops (50 model turns max)
+        tool_calls_limit=100,  # Prevent runaway tool usage
+    )
 
     # ── Run the agent ───────────────────────────────────────────────
     result = await agent.run(
         enriched_prompt,
         deps=deps,
-        usage_limits=UsageLimits(total_tokens_limit=token_limit),
+        usage_limits=usage_limits,
     )
 
     output = {
@@ -475,8 +444,6 @@ async def run_deep_agent(
             )
         except Exception:
             pass  # Mem0 persistence is best-effort
-
-    # Layer 3: MEMORY.md updates are handled by pydantic-deep internally
 
     # Cache the result (skip for conversational runs)
     if not conversation_id:
