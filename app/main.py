@@ -123,9 +123,22 @@ app = FastAPI(
     version="0.4.0",
 )
 
-# Instrument FastAPI AFTER app creation (separate from setup_observability
-# because app must exist first).
-logfire.instrument_fastapi(app)
+# Instrument FastAPI AFTER app creation. In gunicorn mode, post_fork
+# re-initializes observability per worker, so we guard against double
+# instrumentation.
+_fastapi_instrumented = False
+
+
+def instrument_fastapi_app() -> None:
+    """Instrument the FastAPI app with Logfire. Safe to call multiple times."""
+    global _fastapi_instrumented  # noqa: PLW0603
+    if _fastapi_instrumented:
+        return
+    _fastapi_instrumented = True
+    logfire.instrument_fastapi(app)
+
+
+instrument_fastapi_app()
 
 # ── CORS ─────────────────────────────────────────────────────────────
 # Allow the Next.js frontend (nexus-frontend container or localhost dev)

@@ -38,9 +38,7 @@ access_log_format = (
 # Providers created in the master process are not inherited correctly.
 def post_fork(server, worker):  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG001
     """Called in each worker after fork. Sets up observability."""
-    import logfire
-
-    from app.main import app, setup_observability
+    from app.main import instrument_fastapi_app, setup_observability
 
     setup_observability()
-    logfire.instrument_fastapi(app)
+    instrument_fastapi_app()
