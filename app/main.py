@@ -152,6 +152,13 @@ app.add_middleware(
 )
 
 
+# ── WebSocket streaming endpoint ─────────────────────────────────────
+# Real-time streaming of agent execution: text deltas, tool calls,
+# approvals, cancellation. Adapted from vstorm full_app pattern.
+from app.streaming import websocket_agent  # noqa: E402
+
+app.add_api_websocket_route("/ws/agent", websocket_agent)
+
 # ── Rate limiting middleware ─────────────────────────────────────────
 # Applies a sliding-window rate limit (30 req/min by default) to
 # expensive endpoints (agent runs, builds, cerebro, workflows).
