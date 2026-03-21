@@ -160,6 +160,12 @@ from app.streaming import websocket_agent  # noqa: E402
 app.add_api_websocket_route("/ws/agent", websocket_agent)
 
 
+# ── Code tasks endpoint (Devin-style) ───────────────────────────────
+from app.tasks import router as tasks_router  # noqa: E402
+
+app.include_router(tasks_router)
+
+
 # ── Sessions endpoint ────────────────────────────────────────────────
 from app.sessions import session_manager as _session_mgr  # noqa: E402
 
