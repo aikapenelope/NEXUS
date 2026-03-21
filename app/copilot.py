@@ -770,15 +770,10 @@ async def search_brain(
     Args:
         query: What to search for (searches across all notes).
     """
-    # Use httpx to call our own API which has brain search
-    # For now, do a simple grep via the brain tools module
-    from app.tools.brain import BRAIN_TOOLS
-
-    tool_names = [t.__name__ for t in BRAIN_TOOLS]
     return (
-        f"Brain tools available: {', '.join(tool_names)}. "
-        f"Use run_deep with nexus-researcher to search and update the brain. "
-        f"The researcher agent has filesystem access to read/write brain notes."
+        "Brain knowledge base tools: search_knowledge, read_note, write_note, list_notes. "
+        "These are available to all agents via the brain_toolset. "
+        "Use run_deep with nexus-researcher to search and update the brain."
     )
 
 

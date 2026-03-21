@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.builder import design_agent
 from app.agents.cerebro import run_cerebro
+from app.agents.definitions import AGENTS as CODE_AGENTS
 from app.agents.factory import AgentConfig, run_deep_agent
 from app.conversations import (
     add_message,
@@ -55,45 +56,73 @@ from app.workflows import (
 
 # ── Observability ────────────────────────────────────────────────────
 # Two observability layers:
-#   1. Logfire: full-stack (FastAPI, DB, Redis, system metrics)
+#   1. Logfire: full-stack (FastAPI, Pydantic AI agents, DB, Redis)
 #   2. Phoenix: AI-specific (agent traces, evals, prompt management)
 #
-# Logfire: Set LOGFIRE_TOKEN env var for Logfire Cloud (free tier).
-_logfire_token = os.environ.get("LOGFIRE_TOKEN", "")
-if _logfire_token:
-    logfire.configure(token=_logfire_token)
-else:
-    logfire.configure(send_to_logfire=False)
+# Both are configured in setup_observability() which is called:
+#   - By gunicorn post_fork hook (production) — each worker gets its own provider
+#   - At module level as fallback (uvicorn dev mode)
 
-# Phoenix: Send Pydantic AI traces to self-hosted Phoenix instance.
-# Phoenix runs as a Docker container on port 6006.
-_phoenix_endpoint = os.environ.get(
-    "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"
-)
-try:
-    from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+_observability_initialized = False
 
-    _phoenix_provider = TracerProvider()
-    # OpenInference processor enriches spans with AI-specific attributes
-    _phoenix_provider.add_span_processor(OpenInferenceSpanProcessor())
-    # OTLP exporter sends spans to Phoenix
-    _phoenix_provider.add_span_processor(
-        SimpleSpanProcessor(OTLPSpanExporter(endpoint=_phoenix_endpoint))
+
+def setup_observability() -> None:
+    """Configure Logfire + Phoenix observability.
+
+    Must be called AFTER fork in gunicorn (via post_fork hook in gunicorn.conf.py)
+    to ensure each worker gets its own TracerProvider. OpenTelemetry providers
+    created before fork are not inherited correctly by child processes.
+    """
+    global _observability_initialized  # noqa: PLW0603
+    if _observability_initialized:
+        return
+    _observability_initialized = True
+
+    # --- Logfire: full-stack observability ---
+    logfire_token = os.environ.get("LOGFIRE_TOKEN", "")
+    if logfire_token:
+        logfire.configure(token=logfire_token)
+    else:
+        logfire.configure(send_to_logfire=False)
+
+    # Instrument Pydantic AI — captures agent runs, tool calls, model requests
+    logfire.instrument_pydantic_ai()
+
+    # Instrument FastAPI — captures HTTP requests
+    logfire.instrument_fastapi(app)
+
+    # --- Phoenix: AI-specific observability via OpenTelemetry ---
+    phoenix_endpoint = os.environ.get(
+        "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"
     )
-    trace.set_tracer_provider(_phoenix_provider)
-except Exception:
-    pass  # Phoenix is optional — if packages missing or unreachable, skip silently
+    try:
+        from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+        provider = TracerProvider()
+        # OpenInference enriches spans with AI-specific attributes
+        provider.add_span_processor(OpenInferenceSpanProcessor())
+        # OTLP exporter sends spans to Phoenix
+        provider.add_span_processor(
+            SimpleSpanProcessor(OTLPSpanExporter(endpoint=phoenix_endpoint))
+        )
+        trace.set_tracer_provider(provider)
+    except Exception:
+        pass  # Phoenix is optional
+
+
+# Fallback: if not running under gunicorn (e.g. uvicorn dev mode),
+# initialize observability at import time.
+setup_observability()
 
 app = FastAPI(
     title="NEXUS",
     description="Self-hosted AI agent builder platform",
     version="0.4.0",
 )
-logfire.instrument_fastapi(app)
 
 # ── CORS ─────────────────────────────────────────────────────────────
 # Allow the Next.js frontend (nexus-frontend container or localhost dev)
@@ -464,10 +493,38 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentCreateRespo
 
 @app.get("/agents", response_model=AgentListResponse)
 async def list_agents_endpoint(limit: int = 50) -> AgentListResponse:
-    """List all saved agents from the registry."""
+    """List all agents: code-defined (production) + DB-stored.
+
+    Code-defined agents appear first with source='code', followed by
+    DB-stored agents with source='db'.
+    """
     try:
-        agents = await list_agents(limit=limit)
-        return AgentListResponse(agents=agents)
+        all_agents: list[dict[str, Any]] = []
+
+        # Code-defined agents (production)
+        for name, config in CODE_AGENTS.items():
+            all_agents.append({
+                "id": f"code:{name}",
+                "name": config.name,
+                "description": config.description,
+                "role": config.role,
+                "include_todo": config.include_todo,
+                "include_filesystem": config.include_filesystem,
+                "include_subagents": config.include_subagents,
+                "include_memory": config.include_memory,
+                "include_web": config.include_web,
+                "include_skills": config.include_skills,
+                "total_runs": 0,
+                "source": "code",
+            })
+
+        # DB-stored agents
+        db_agents = await list_agents(limit=limit)
+        for a in db_agents:
+            a["source"] = "db"
+            all_agents.append(a)
+
+        return AgentListResponse(agents=all_agents)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent list failed: {e}") from e
 
