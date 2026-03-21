@@ -166,6 +166,12 @@ from app.tasks import router as tasks_router  # noqa: E402
 app.include_router(tasks_router)
 
 
+# ── Eval results endpoint ────────────────────────────────────────────
+from app.eval_results import router as eval_results_router  # noqa: E402
+
+app.include_router(eval_results_router)
+
+
 # ── Sessions endpoint ────────────────────────────────────────────────
 from app.sessions import session_manager as _session_mgr  # noqa: E402
 
