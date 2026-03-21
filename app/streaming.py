@@ -45,53 +45,61 @@ from pydantic_ai import (
     ThinkingPartDelta,
     ToolCallPartDelta,
 )
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolApproved, ToolDenied
 from pydantic_ai.usage import UsageLimits
 from pydantic_deep import DeepAgentDeps
 
 from app.agents.definitions import CODING_AGENTS
-from app.agents.factory import AgentConfig, _create_backend, _resolve_token_limit, build_agent
+from app.agents.factory import AgentConfig, _resolve_token_limit, build_agent
+from app.sessions import session_manager
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Session state
+# Streaming session state (wraps persistent Session with async runtime)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class AgentSession:
-    """Per-session state for a streaming agent conversation."""
+class StreamingSession:
+    """Wraps a persistent Session with async runtime state."""
 
     session_id: str
     config: AgentConfig
     deps: DeepAgentDeps
-    message_history: list[ModelMessage] = field(default_factory=list)
+    message_history: list[Any] = field(default_factory=list)
     pending_approval: dict[str, Any] = field(default_factory=dict)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     running_task: asyncio.Task[None] | None = field(default=None)
     _streamed_text: str = ""
 
 
-# Global session store (in production, use Redis or DB)
-_sessions: dict[str, AgentSession] = {}
+# Active streaming sessions
+_streaming: dict[str, StreamingSession] = {}
 
 
 def _get_or_create_session(
     session_id: str | None,
     config: AgentConfig,
-) -> AgentSession:
-    """Get existing session or create a new one."""
-    if session_id and session_id in _sessions:
-        return _sessions[session_id]
-
+) -> StreamingSession:
+    """Get existing streaming session or create with persistent backend."""
     sid = session_id or str(uuid.uuid4())
-    backend = _create_backend(config)
-    deps = DeepAgentDeps(backend=backend)
-    session = AgentSession(session_id=sid, config=config, deps=deps)
-    _sessions[sid] = session
+
+    if sid in _streaming:
+        return _streaming[sid]
+
+    # Create persistent session via SessionManager (LocalBackend on disk)
+    persistent = session_manager.get_or_create(sid, config)
+
+    session = StreamingSession(
+        session_id=sid,
+        config=config,
+        deps=persistent.deps,
+        message_history=persistent.message_history,
+    )
+    _streaming[sid] = session
     return session
 
 
@@ -102,7 +110,7 @@ def _get_or_create_session(
 
 async def _run_streaming(
     websocket: WebSocket,
-    session: AgentSession,
+    session: StreamingSession,
     user_message: str,
     deferred_results: DeferredToolResults | None = None,
 ) -> None:
@@ -163,6 +171,12 @@ async def _run_streaming(
     # Update session history
     session.message_history = result.all_messages()
 
+    # Persist history to disk (survives restarts)
+    persistent = session_manager.get(session.session_id)
+    if persistent is not None:
+        persistent.message_history = session.message_history
+        persistent.save_history()
+
     # Send final response
     output_str = str(result.output) if result.output else ""
     await websocket.send_json({
@@ -176,7 +190,7 @@ async def _process_node(
     websocket: WebSocket,
     node: Any,
     run: Any,
-    session: AgentSession,
+    session: StreamingSession,
 ) -> None:
     """Process a single node and send WebSocket events."""
     if Agent.is_model_request_node(node):
@@ -189,7 +203,7 @@ async def _stream_model_request(
     websocket: WebSocket,
     node: Any,
     run: Any,
-    session: AgentSession,
+    session: StreamingSession,
 ) -> None:
     """Stream text/thinking/tool-call deltas from model request."""
     current_tool_name: str | None = None
@@ -235,7 +249,7 @@ async def _stream_tool_calls(
     websocket: WebSocket,
     node: Any,
     run: Any,
-    session: AgentSession,
+    session: StreamingSession,
 ) -> None:
     """Stream tool call and result events."""
     tool_names: dict[str, str] = {}
@@ -294,7 +308,7 @@ async def _stream_tool_calls(
 
 async def _handle_approval(
     websocket: WebSocket,
-    session: AgentSession,
+    session: StreamingSession,
     approval_response: dict[str, bool],
 ) -> None:
     """Handle approval response and continue agent execution."""
@@ -333,7 +347,7 @@ async def websocket_agent(websocket: WebSocket) -> None:
     """
     await websocket.accept()
 
-    session: AgentSession | None = None
+    session: StreamingSession | None = None
     incoming: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     async def _reader() -> None:
@@ -424,7 +438,7 @@ async def websocket_agent(websocket: WebSocket) -> None:
 
 async def _run_task(
     websocket: WebSocket,
-    session: AgentSession,
+    session: StreamingSession,
     user_message: str,
     approval: dict[str, bool] | None,
 ) -> None:

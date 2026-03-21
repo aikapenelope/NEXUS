@@ -159,6 +159,16 @@ from app.streaming import websocket_agent  # noqa: E402
 
 app.add_api_websocket_route("/ws/agent", websocket_agent)
 
+
+# ── Sessions endpoint ────────────────────────────────────────────────
+from app.sessions import session_manager as _session_mgr  # noqa: E402
+
+
+@app.get("/sessions")
+async def list_sessions() -> dict[str, Any]:
+    """List all active agent sessions."""
+    return {"sessions": _session_mgr.list_sessions()}
+
 # ── Rate limiting middleware ─────────────────────────────────────────
 # Applies a sliding-window rate limit (30 req/min by default) to
 # expensive endpoints (agent runs, builds, cerebro, workflows).
