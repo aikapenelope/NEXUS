@@ -40,6 +40,8 @@ from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 from app.tools.brain_toolset import create_brain_toolset
+from app.tools.github_toolset import create_github_toolset
+from app.tools.graphiti_native import create_graphiti_native_toolset
 from app.tools.langchain_tools import create_langchain_toolset
 from app.tools.remember_toolset import create_remember_toolset
 
@@ -308,14 +310,16 @@ def _resolve_skill_dirs(config: AgentConfig) -> list[str] | None:
 def _build_toolsets() -> list[Any]:
     """Build the list of custom toolsets for all agents.
 
-    Includes brain knowledge base, remember tool, and LangChain research
-    tools (Wikipedia, Arxiv, PubMed) if available.
+    Includes brain knowledge base, remember tool, Graphiti knowledge graph,
+    LangChain research tools, and GitHub (if configured).
+    All toolsets use lazy connections -- no init-time crashes.
     """
     from pydantic_ai.toolsets import AbstractToolset
 
     toolsets: list[AbstractToolset[Any]] = [
         create_brain_toolset(),
         create_remember_toolset(),
+        create_graphiti_native_toolset(),  # Lazy connection, no crash if down
     ]
 
     # LangChain tools (graceful degradation if not installed)
@@ -323,11 +327,10 @@ def _build_toolsets() -> list[Any]:
     if lc_toolset is not None:
         toolsets.append(lc_toolset)
 
-    # NOTE: Graphiti MCP toolset is NOT added to default toolsets because
-    # MCPServerStreamableHTTP connects during agent initialization and
-    # crashes if Graphiti is down. Graphiti tools are available via the
-    # /mcp/call REST endpoint instead. To enable for specific agents,
-    # pass graphiti_toolset explicitly via the toolsets parameter.
+    # GitHub MCP (graceful degradation if token not set)
+    gh_toolset = create_github_toolset()
+    if gh_toolset is not None:
+        toolsets.append(gh_toolset)
 
     return toolsets  # type: ignore[return-value]
 
