@@ -40,6 +40,7 @@ from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 from app.tools.brain_toolset import create_brain_toolset
+from app.tools.search_providers import get_search_provider
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +356,8 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         include_skills=config.include_skills,
         include_memory=config.include_memory,
         include_web=config.include_web,
+        # --- Web search provider (Tavily + DuckDuckGo fallback) ---
+        web_search_provider=get_search_provider() if config.include_web else None,
         include_execute=config.use_sandbox and config.include_filesystem,
         # --- Fix 6: Plan mode + general-purpose subagent ---
         include_plan=include_plan,
