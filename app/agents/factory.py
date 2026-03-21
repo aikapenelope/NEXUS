@@ -40,11 +40,9 @@ from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
 from app.tools.brain_toolset import create_brain_toolset
-from app.tools.coding_mcps import create_code_context_toolset, create_git_mcp_toolset
 from app.tools.github_toolset import create_github_toolset
 from app.tools.graphiti_native import create_graphiti_native_toolset
 from app.tools.langchain_tools import create_langchain_toolset
-from app.tools.playwright_toolset import create_playwright_toolset
 from app.tools.remember_toolset import create_remember_toolset
 
 logger = logging.getLogger(__name__)
@@ -325,12 +323,13 @@ def _build_toolsets() -> list[Any]:
     ]
 
     # Optional toolsets (graceful degradation if not configured)
+    # NOTE: MCP stdio toolsets (git, code-context, playwright) are NOT
+    # added here because MCPServerStdio connects during agent init and
+    # crashes if the server fails to start. These are added per-task
+    # in /tasks/code where a repo context exists.
     for factory in [
         create_langchain_toolset,
         create_github_toolset,
-        create_git_mcp_toolset,
-        create_code_context_toolset,
-        create_playwright_toolset,
     ]:
         toolset = factory()
         if toolset is not None:
