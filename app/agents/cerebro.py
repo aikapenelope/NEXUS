@@ -1,13 +1,16 @@
 """Cerebro: multi-agent analysis pipeline (anterior.com style).
 
 Pipeline stages:
-  1. Research  (Groq)  -- gather raw information, web search, extract facts
+  1. Research  (Groq)  -- gather raw information, extract facts
   2. Knowledge (Groq)  -- organize facts, identify patterns, build context
   3. Analysis  (Haiku) -- deep reasoning, cross-reference, draw conclusions
   4. Synthesis (Haiku) -- produce final structured output with recommendations
 
 Each stage runs as an independent pydantic-ai Agent with its own UsageLimits
 and cost budget, preventing any single stage from draining tokens.
+
+Cost tracking: each stage's token usage is accumulated and the total is
+persisted to the nexus_costs table via save_cost_event.
 """
 
 from __future__ import annotations
@@ -198,6 +201,17 @@ async def run_cerebro(query: str) -> dict[str, Any]:
         usage_limits=step_limit,
     )
     _accumulate(synthesis_result.usage())
+
+    # Persist cost data for visibility
+    try:
+        from app.traces import save_cost_event
+
+        await save_cost_event(
+            input_tokens=total_usage["input_tokens"],
+            output_tokens=total_usage["output_tokens"],
+        )
+    except Exception:
+        pass  # Cost tracking is best-effort
 
     return {
         "result": synthesis_result.output.model_dump(),
