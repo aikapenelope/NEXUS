@@ -39,6 +39,7 @@ from pydantic_deep.types import SubAgentConfig
 from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
 from app.models import get_model_for_role
+from app.tools.brain_toolset import create_brain_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,8 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         subagents=config.subagent_configs,
         # --- Skills ---
         skill_directories=_resolve_skill_dirs(config),
+        # --- Custom toolsets (brain knowledge base) ---
+        toolsets=[create_brain_toolset()],
         # --- Hooks (safety + audit) — matches vstorm full_app ---
         hooks=_HOOKS,
         # --- Middleware (audit stats + path blocking) ---
