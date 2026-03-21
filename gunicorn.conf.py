@@ -31,3 +31,13 @@ access_log_format = (
     '"query":"%(q)s","status":"%(s)s","response_time_ms":"%(M)s",'
     '"bytes":"%(B)s","remote_addr":"%(h)s","user_agent":"%(a)s"}'
 )
+
+
+# ── Post-fork: initialize observability per worker ───────────────────
+# OpenTelemetry TracerProvider must be created AFTER gunicorn forks workers.
+# Providers created in the master process are not inherited correctly.
+def post_fork(server, worker):  # type: ignore[no-untyped-def]  # noqa: ANN001, ARG001
+    """Called in each worker after fork. Sets up observability."""
+    from app.main import setup_observability
+
+    setup_observability()
