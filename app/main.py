@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app.agents.builder import design_agent
+from app.agents.builder import build_agent_from_description
 from app.agents.cerebro import run_cerebro
 from app.agents.factory import AgentConfig, run_deep_agent
 from app.conversations import (
@@ -154,9 +154,10 @@ class BuildRequest(BaseModel):
 
 
 class BuildResponse(BaseModel):
-    """Python code for an agent definition, produced by the architect agent."""
+    """The generated AgentConfig from the builder agent, auto-saved to registry."""
 
-    code: str = Field(description="Python code for the agent definition file")
+    config: AgentConfig
+    agent_id: str = Field(description="UUID of the saved agent in the registry")
 
 
 class RunRequest(BaseModel):
@@ -366,17 +367,29 @@ async def health_ready() -> ReadinessResponse:
 
 @app.post("/agents/build", response_model=BuildResponse)
 async def build_agent_endpoint(request: BuildRequest) -> BuildResponse:
-    """Design an agent from a natural language description.
+    """Build an agent from a natural language description.
 
-    Uses Claude Haiku to analyze requirements and produce Python code
-    for an agent definition file. The code should be reviewed and saved
-    to app/agents/definitions/.
+    Uses Claude Haiku to translate the description into a validated
+    AgentConfig, then auto-saves it to the registry.
     """
     try:
-        code = await design_agent(request.description)
-        return BuildResponse(code=code)
+        t0 = time.monotonic()
+        config = await build_agent_from_description(request.description)
+        latency = int((time.monotonic() - t0) * 1000)
+        record = await save_agent(config)
+        await save_run(
+            agent_id=record["id"],
+            agent_name=config.name,
+            prompt=request.description,
+            output=f"Built agent: {config.name}",
+            model="anthropic:claude-haiku-4-5",
+            role="builder",
+            latency_ms=latency,
+            source="build",
+        )
+        return BuildResponse(config=config, agent_id=record["id"])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent architect failed: {e}") from e
+        raise HTTPException(status_code=500, detail=f"Builder agent failed: {e}") from e
 
 
 @app.post("/agents/run", response_model=RunResponse)

@@ -12,10 +12,9 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.ag_ui import AGUIApp, StateDeps
 
-from app.agents.builder import design_agent
+from app.agents.builder import build_agent_from_description
 from app.agents.deep.configs import DEEP_AGENTS
-from app.agents.definitions import AGENTS as CODE_AGENTS
-from app.agents.factory import run_deep_agent
+from app.agents.factory import AgentConfig, run_deep_agent
 from app.events import emit_event
 from app.mcp import call_mcp_tool, list_mcp_tools, list_registered_servers
 from app.memory import add_memory, search_memory
@@ -23,6 +22,7 @@ from app.registry import (
     agent_config_from_record,
     get_agent,
     list_agents,
+    save_agent,
 )
 from app.tools.registry import get_tools_with_status
 from app.traces import save_run
@@ -176,7 +176,7 @@ understand exactly what the user needs. Follow this process:
    the agent will be configured.
 
 TOOLS:
-- design_new_agent: Design a new agent and produce Python code (ONLY after discovery + confirmation)
+- build_agent: Create an AI agent (ONLY after discovery + confirmation)
 - list_agents: List all saved agents in the registry (use to show what exists)
 - run_agent: Execute a saved agent by name or ID with a prompt, returns the result
 - create_workflow: Create a sequential pipeline of agents (chain agent A -> B -> C)
@@ -208,30 +208,72 @@ copilot_agent = Agent(
 
 
 @copilot_agent.tool
-async def design_new_agent(ctx: RunContext[StateDeps[NexusState]], description: str) -> str:
-    """Design a new AI agent by analyzing requirements and producing Python code.
-
-    Instead of creating a runtime config, this produces code you can review
-    and add to app/agents/definitions/. The output is a complete Python file.
+async def build_agent(ctx: RunContext[StateDeps[NexusState]], description: str) -> str:
+    """Build an AI agent from a natural language description.
 
     Args:
-        description: Detailed description of what the agent should do.
+        description: What you want the agent to do, in plain language.
     """
     state: NexusState = ctx.deps.state
+    state.current_agent = AgentInfo(
+        name="Building...", role=description, model="", tools=[], status="building"
+    )
     state.active_panel = "agents"
 
-    code = await design_agent(description)
+    config: AgentConfig = await build_agent_from_description(description)
 
+    # Derive enabled tools from feature toggles
+    enabled_tools: list[str] = []
+    if config.include_todo:
+        enabled_tools.append("todo")
+    if config.include_filesystem:
+        enabled_tools.append("filesystem")
+    if config.include_subagents:
+        enabled_tools.append("subagents")
+    if config.include_skills:
+        enabled_tools.append("skills")
+    if config.include_memory:
+        enabled_tools.append("memory")
+    if config.include_web:
+        enabled_tools.append("web")
+
+    # Include ready tools from the registry
+    try:
+        registry_tools = await get_tools_with_status()
+        for t in registry_tools:
+            if t["configured"] and t["enabled"] and t["id"] not in enabled_tools:
+                enabled_tools.append(t["id"])
+    except Exception:
+        pass  # Registry is best-effort
+
+    # Auto-save to registry (upserts if name already exists)
+    record = await save_agent(config)
+    agent_id = record["id"]
+    action = record.get("_action", "created")
+
+    state.current_agent = AgentInfo(
+        name=config.name,
+        role=config.role,
+        model=config.role,
+        tools=enabled_tools,
+        status="ready",
+    )
+    state.last_agent_config = config.model_dump()
+
+    tools_str = ", ".join(enabled_tools) or "none"
+    verb = "updated" if action == "updated" else "created"
+
+    # Emit build event
     await _log_activity(
         state,
-        agent_name="architect",
+        agent_name=config.name,
         event_type="complete",
-        detail="Agent design produced",
+        detail=f"Agent {verb} with tools: {tools_str}",
     )
 
     return (
-        "Here's the agent definition code. Review it and save to "
-        f"app/agents/definitions/:\n\n{code}"
+        f"Agent '{config.name}' {verb} in registry (id: {agent_id}). "
+        f"Role: '{config.role}', tools: {tools_str}"
     )
 
 
@@ -247,29 +289,18 @@ async def list_saved_agents(
     state: NexusState = ctx.deps.state
     state.active_panel = "agents"
 
-    lines: list[str] = []
-
-    # Code-defined agents (production)
-    if CODE_AGENTS:
-        lines.append("**Code-defined agents (production):**")
-        for name, cfg in CODE_AGENTS.items():
-            lines.append(f"- **{name}** ({cfg.role}) — {cfg.description}")
-
-    # DB-stored agents
     agents = await list_agents(limit=50)
-    if agents:
-        lines.append("\n**DB-stored agents:**")
-        for a in agents:
-            runs = a.get("total_runs", 0)
-            lines.append(
-                f"- **{a['name']}** ({a['role']}) — {a['description']} "
-                f"[{runs} runs, id: {a['id'][:8]}...]"
-            )
+    if not agents:
+        return "No agents saved in the registry yet."
 
-    if not lines:
-        return "No agents available."
-
-    return "\n".join(lines)
+    lines: list[str] = []
+    for a in agents:
+        runs = a.get("total_runs", 0)
+        lines.append(
+            f"- **{a['name']}** ({a['role']}) — {a['description']} "
+            f"[{runs} runs, id: {a['id'][:8]}...]"
+        )
+    return f"Saved agents ({len(agents)}):\n" + "\n".join(lines)
 
 
 @copilot_agent.tool
@@ -288,37 +319,24 @@ async def run_agent(
 
     state: NexusState = ctx.deps.state
 
-    # Check code-defined agents first (these are the production agents)
-    search = agent_name_or_id.lower()
-    code_config = CODE_AGENTS.get(agent_name_or_id) or CODE_AGENTS.get(search)
-    if code_config is None:
-        # Fuzzy match on code-defined agent names
-        code_config = next(
-            (c for name, c in CODE_AGENTS.items() if name.lower() == search),
+    # Try to find the agent by ID first, then by name
+    record = await get_agent(agent_name_or_id)
+    if record is None:
+        # Search by name (case-insensitive)
+        agents = await list_agents(limit=100)
+        search = agent_name_or_id.lower()
+        record = next(
+            (a for a in agents if a["name"].lower() == search),
             None,
         )
+    if record is None:
+        return (
+            f"Agent '{agent_name_or_id}' not found. "
+            "Use list_agents to see available agents."
+        )
 
-    if code_config is not None:
-        config = code_config
-        agent_id = f"code:{config.name}"
-    else:
-        # Fall back to DB-stored agents
-        record = await get_agent(agent_name_or_id)
-        if record is None:
-            agents = await list_agents(limit=100)
-            record = next(
-                (a for a in agents if a["name"].lower() == search),
-                None,
-            )
-        if record is None:
-            available_code = ", ".join(CODE_AGENTS.keys())
-            return (
-                f"Agent '{agent_name_or_id}' not found. "
-                f"Code-defined agents: {available_code}. "
-                "Use list_agents to see DB agents."
-            )
-        config = await agent_config_from_record(record)
-        agent_id = record["id"]
+    config = await agent_config_from_record(record)
+    agent_id = record["id"]
 
     state.current_agent = AgentInfo(
         name=config.name,
