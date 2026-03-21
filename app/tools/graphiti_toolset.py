@@ -27,7 +27,7 @@ from pydantic_ai.mcp import MCPServerStreamableHTTP
 logger = logging.getLogger(__name__)
 
 # Default MCP endpoint (internal Docker network)
-_DEFAULT_GRAPHITI_URL = "http://graphiti:8000/mcp/"
+_DEFAULT_GRAPHITI_URL = "http://graphiti:8000/mcp"
 
 
 def create_graphiti_toolset() -> MCPServerStreamableHTTP | None:
