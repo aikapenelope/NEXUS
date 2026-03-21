@@ -34,7 +34,6 @@ from pydantic_deep import (
     create_deep_agent,
     create_sliding_window_processor,
 )
-from pydantic_deep.types import SubAgentConfig
 
 from app.agents.deep.middleware import AuditMiddleware, PermissionMiddleware
 from app.config import settings
@@ -220,8 +219,8 @@ class AgentConfig(BaseModel):
         description="Subdirectory under app/agents/knowledge/ for this agent's skills",
     )
 
-    # Subagent configurations (SubAgentConfig dicts for the task tool)
-    subagent_configs: list[SubAgentConfig] | None = Field(
+    # Subagent configurations (dicts with name, description, instructions)
+    subagent_configs: list[dict[str, Any]] | None = Field(
         default=None,
         description="Pre-configured subagents: [{name, description, instructions}, ...]",
     )
@@ -363,7 +362,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         include_plan=include_plan,
         include_general_purpose_subagent=include_general_purpose,
         # --- Subagent configs (pre-defined specialists) ---
-        subagents=config.subagent_configs,
+        subagents=config.subagent_configs,  # type: ignore[arg-type]
         # --- Skills ---
         skill_directories=_resolve_skill_dirs(config),
         # --- Custom toolsets (brain knowledge base) ---
