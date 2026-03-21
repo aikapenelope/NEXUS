@@ -62,9 +62,13 @@ def _clone_repo(repo_url: str, target_dir: Path, branch: str) -> None:
 
 
 def _get_diff(workspace: Path) -> tuple[str, list[str]]:
-    """Get git diff and list of changed files from workspace."""
+    """Get git diff (tracked + untracked) and list of changed files."""
+    # Stage all changes including new files
+    subprocess.run(["git", "add", "-A"], cwd=str(workspace), capture_output=True)
+
+    # Get diff of staged changes
     result = subprocess.run(
-        ["git", "diff", "--stat"],
+        ["git", "diff", "--cached", "--stat"],
         capture_output=True,
         text=True,
         cwd=str(workspace),
@@ -76,11 +80,15 @@ def _get_diff(workspace: Path) -> tuple[str, list[str]]:
     ]
 
     diff_result = subprocess.run(
-        ["git", "diff"],
+        ["git", "diff", "--cached"],
         capture_output=True,
         text=True,
         cwd=str(workspace),
     )
+
+    # Reset staging (don't leave dirty index)
+    subprocess.run(["git", "reset", "HEAD"], cwd=str(workspace), capture_output=True)
+
     return diff_result.stdout, files
 
 
@@ -113,11 +121,12 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
             cost_budget_usd=request.cost_budget_usd,
         )
 
-    # Override limits from request
+    # Override limits from request and disable sandbox (headless, no approval flow)
     overrides = {
         **config.__dict__,
         "token_limit": request.token_limit,
         "cost_budget_usd": request.cost_budget_usd,
+        "use_sandbox": False,  # LocalBackend, no Docker (avoids DeferredToolRequests)
     }
     config = AgentConfig(**overrides)
 
