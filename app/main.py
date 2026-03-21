@@ -72,6 +72,8 @@ def setup_observability() -> None:
     Must be called AFTER fork in gunicorn (via post_fork hook in gunicorn.conf.py)
     to ensure each worker gets its own TracerProvider. OpenTelemetry providers
     created before fork are not inherited correctly by child processes.
+
+    Note: logfire.instrument_fastapi(app) is called separately after app creation.
     """
     global _observability_initialized  # noqa: PLW0603
     if _observability_initialized:
@@ -87,9 +89,6 @@ def setup_observability() -> None:
 
     # Instrument Pydantic AI — captures agent runs, tool calls, model requests
     logfire.instrument_pydantic_ai()
-
-    # Instrument FastAPI — captures HTTP requests
-    logfire.instrument_fastapi(app)
 
     # --- Phoenix: AI-specific observability via OpenTelemetry ---
     phoenix_endpoint = os.environ.get(
@@ -123,6 +122,10 @@ app = FastAPI(
     description="Self-hosted AI agent builder platform",
     version="0.4.0",
 )
+
+# Instrument FastAPI AFTER app creation (separate from setup_observability
+# because app must exist first).
+logfire.instrument_fastapi(app)
 
 # ── CORS ─────────────────────────────────────────────────────────────
 # Allow the Next.js frontend (nexus-frontend container or localhost dev)
