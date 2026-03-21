@@ -35,6 +35,8 @@ dependencies = [
     "wikipedia>=1.4.0",
     "arxiv>=2.1.0",
     "xmltodict>=0.14.0",
+    # Graphiti temporal knowledge graph (native Python, no MCP)
+    "graphiti-core[falkordb]>=0.28.0",
 ]
 
 [project.optional-dependencies]
