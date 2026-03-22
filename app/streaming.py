@@ -116,8 +116,7 @@ async def _run_streaming(
 ) -> None:
     """Run agent with streaming events sent via WebSocket."""
     agent = build_agent(session.config)
-    # Cap tokens for WebSocket sessions (testing mode)
-    token_limit = min(_resolve_token_limit(session.config), 15000)
+    token_limit = _resolve_token_limit(session.config)
 
     usage_limits = UsageLimits(
         total_tokens_limit=token_limit,
@@ -406,7 +405,6 @@ async def websocket_agent(websocket: WebSocket) -> None:
             if session is None:
                 config = CODING_AGENTS.get(agent_name)
                 if config is None:
-                    # Fallback: minimal config
                     config = AgentConfig(
                         name=agent_name,
                         description="coding agent",
@@ -419,12 +417,25 @@ async def websocket_agent(websocket: WebSocket) -> None:
                         cost_budget_usd=0.50,
                     )
                 else:
-                    # Override sandbox for WebSocket sessions (LocalBackend,
-                    # no Docker). This prevents DeferredToolRequests from
-                    # execute approval which the streaming handler supports
-                    # but causes issues with the agent not using tools.
+                    # Light profile for WebSocket: only filesystem + todo.
+                    # Disables subagents, skills, memory, web, teams, plan,
+                    # checkpoints to reduce token overhead from ~28K to ~8K.
                     config = AgentConfig(
-                        **{**config.__dict__, "use_sandbox": False}
+                        name=config.name,
+                        description=config.description,
+                        instructions=config.instructions,
+                        role=config.role,
+                        include_todo=True,
+                        include_filesystem=True,
+                        include_subagents=False,
+                        include_skills=False,
+                        include_memory=False,
+                        include_web=False,
+                        context_manager=False,
+                        use_sandbox=False,
+                        light_mode=True,
+                        token_limit=30000,
+                        cost_budget_usd=0.50,
                     )
                 session = _get_or_create_session(session_id, config)
                 if not session_id:

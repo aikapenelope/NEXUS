@@ -234,6 +234,12 @@ class AgentConfig(BaseModel):
     token_limit: int | None = Field(default=None, description="Max total tokens per run")
     cost_budget_usd: float | None = Field(default=None, description="Max USD cost per run")
 
+    # Light mode: skip custom toolsets (brain, remember, graphiti, langchain, github)
+    # to reduce token overhead. Used for WebSocket streaming sessions.
+    light_mode: bool = Field(
+        default=False, description="Skip custom toolsets for lower token usage"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -423,7 +429,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         # --- Skills ---
         skill_directories=_resolve_skill_dirs(config),
         # --- Custom toolsets (brain + remember + LangChain research tools) ---
-        toolsets=_build_toolsets(),
+        toolsets=[] if config.light_mode else _build_toolsets(),
         # --- Hooks (safety + audit) — matches vstorm full_app ---
         hooks=_HOOKS,
         # --- Middleware (audit + permissions + loop detection) ---
