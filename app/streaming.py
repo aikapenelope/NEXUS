@@ -177,11 +177,17 @@ async def _run_streaming(
         persistent.message_history = session.message_history
         persistent.save_history()
 
-    # Send final response
+    # Send final response with usage stats
     output_str = str(result.output) if result.output else ""
+    usage = result.usage()
+    tokens_used = usage.total_tokens if usage else 0
+    cost_usd = round(tokens_used * 3.0 / 1_000_000, 4)  # rough estimate
+
     await websocket.send_json({
         "type": "response",
         "content": output_str,
+        "tokens_used": tokens_used,
+        "cost_usd": cost_usd,
     })
     await websocket.send_json({"type": "done"})
 
@@ -410,6 +416,14 @@ async def websocket_agent(websocket: WebSocket) -> None:
                         use_sandbox=False,
                         token_limit=30000,
                         cost_budget_usd=0.50,
+                    )
+                else:
+                    # Override sandbox for WebSocket sessions (LocalBackend,
+                    # no Docker). This prevents DeferredToolRequests from
+                    # execute approval which the streaming handler supports
+                    # but causes issues with the agent not using tools.
+                    config = AgentConfig(
+                        **{**config.__dict__, "use_sandbox": False}
                     )
                 session = _get_or_create_session(session_id, config)
                 if not session_id:

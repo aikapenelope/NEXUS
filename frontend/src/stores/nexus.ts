@@ -29,6 +29,8 @@ export interface AgentEvent {
   todos?: TodoItem[];
   requests?: ApprovalRequest[];
   session_id?: string;
+  tokens_used?: number;
+  cost_usd?: number;
 }
 
 export interface TodoItem {
@@ -85,6 +87,7 @@ interface NexusStore {
 
   // Stats
   tokensUsed: number;
+  costUsd: number;
 
   // Sessions list
   sessions: SessionInfo[];
@@ -115,6 +118,7 @@ export const useNexusStore = create<NexusStore>((set) => ({
   todos: [],
   pendingApprovals: [],
   tokensUsed: 0,
+  costUsd: 0,
   sessions: [],
 
   setAgent: (agent) => set({ agent }),
