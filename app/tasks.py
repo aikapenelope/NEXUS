@@ -121,12 +121,13 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
             cost_budget_usd=request.cost_budget_usd,
         )
 
-    # Override limits from request and disable sandbox (headless, no approval flow)
+    # Override limits and use light_mode for efficiency
     overrides = {
         **config.__dict__,
         "token_limit": request.token_limit,
         "cost_budget_usd": request.cost_budget_usd,
-        "use_sandbox": False,  # LocalBackend, no Docker (avoids DeferredToolRequests)
+        "use_sandbox": False,
+        "light_mode": True,
     }
     config = AgentConfig(**overrides)
 
