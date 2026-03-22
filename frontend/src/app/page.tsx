@@ -3,6 +3,7 @@
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { AgentSelector } from "@/components/sidebar/AgentSelector";
 import { TodoProgress } from "@/components/panels/TodoProgress";
+import { RightPanel } from "@/components/panels/RightPanel";
 import { StatusBar } from "@/components/StatusBar";
 
 export default function Home() {
@@ -29,6 +30,9 @@ export default function Home() {
             <ChatPanel />
           </div>
         </main>
+
+        {/* Right panel */}
+        <RightPanel />
       </div>
 
       <StatusBar />
