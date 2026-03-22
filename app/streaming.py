@@ -116,12 +116,13 @@ async def _run_streaming(
 ) -> None:
     """Run agent with streaming events sent via WebSocket."""
     agent = build_agent(session.config)
-    token_limit = _resolve_token_limit(session.config)
+    # Cap tokens for WebSocket sessions (testing mode)
+    token_limit = min(_resolve_token_limit(session.config), 15000)
 
     usage_limits = UsageLimits(
         total_tokens_limit=token_limit,
-        request_limit=50,
-        tool_calls_limit=100,
+        request_limit=10,
+        tool_calls_limit=20,
     )
 
     await websocket.send_json({"type": "start"})
