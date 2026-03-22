@@ -69,6 +69,12 @@ export function useAgentStream() {
           break;
         case "response":
           s.finalizeAssistantMessage(event.content ?? "");
+          if (event.tokens_used) {
+            useNexusStore.setState({
+              tokensUsed: event.tokens_used,
+              costUsd: event.cost_usd ?? 0,
+            });
+          }
           break;
         case "done":
           s.setStatus("done");
