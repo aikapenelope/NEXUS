@@ -2,6 +2,7 @@
 
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { AgentSelector } from "@/components/sidebar/AgentSelector";
+import { SessionList } from "@/components/sidebar/SessionList";
 import { TodoProgress } from "@/components/panels/TodoProgress";
 import { RightPanel } from "@/components/panels/RightPanel";
 import { StatusBar } from "@/components/StatusBar";
@@ -17,6 +18,8 @@ export default function Home() {
             <span className="ml-2 text-[10px] text-zinc-600">v0.5.0</span>
           </div>
           <AgentSelector />
+          <div className="border-t border-zinc-800" />
+          <SessionList />
           <div className="flex-1" />
           <TodoProgress />
         </aside>
