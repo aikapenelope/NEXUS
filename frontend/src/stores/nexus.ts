@@ -85,6 +85,9 @@ interface NexusStore {
   // Approval
   pendingApprovals: ApprovalRequest[];
 
+  // Accumulated tool calls for current turn (never cleared until finalize copies them)
+  turnToolCalls: ToolCall[];
+
   // Stats
   tokensUsed: number;
   costUsd: number;
@@ -119,6 +122,7 @@ export const useNexusStore = create<NexusStore>((set) => ({
   pendingApprovals: [],
   tokensUsed: 0,
   costUsd: 0,
+  turnToolCalls: [],
   sessions: [],
 
   setAgent: (agent) => set({ agent }),
@@ -133,6 +137,7 @@ export const useNexusStore = create<NexusStore>((set) => ({
       ],
       currentText: "",
       currentToolCalls: [],
+      turnToolCalls: [],
       status: "running",
     })),
 
@@ -140,12 +145,13 @@ export const useNexusStore = create<NexusStore>((set) => ({
     set((s) => ({ currentText: s.currentText + delta })),
 
   addToolCall: (id, name) =>
-    set((s) => ({
-      currentToolCalls: [
-        ...s.currentToolCalls,
-        { id, name, args: "", status: "running" },
-      ],
-    })),
+    set((s) => {
+      const tc = { id, name, args: "", status: "running" as const };
+      return {
+        currentToolCalls: [...s.currentToolCalls, tc],
+        turnToolCalls: [...s.turnToolCalls, tc],
+      };
+    }),
 
   appendToolArgs: (delta) =>
     set((s) => {
@@ -162,7 +168,10 @@ export const useNexusStore = create<NexusStore>((set) => ({
   setToolOutput: (name, output) =>
     set((s) => ({
       currentToolCalls: s.currentToolCalls.map((tc) =>
-        tc.name === name ? { ...tc, output, status: "done" } : tc,
+        tc.name === name ? { ...tc, output, status: "done" as const } : tc,
+      ),
+      turnToolCalls: s.turnToolCalls.map((tc) =>
+        tc.name === name ? { ...tc, output, status: "done" as const } : tc,
       ),
     })),
 
@@ -172,10 +181,9 @@ export const useNexusStore = create<NexusStore>((set) => ({
 
   finalizeAssistantMessage: (content) =>
     set((s) => {
-      // Preserve tool calls that happened during this turn
       const toolCalls =
-        s.currentToolCalls.length > 0
-          ? s.currentToolCalls.map((tc) => ({ ...tc, status: "done" as const }))
+        s.turnToolCalls.length > 0
+          ? s.turnToolCalls.map((tc) => ({ ...tc, status: "done" as const }))
           : undefined;
 
       return {
@@ -190,6 +198,7 @@ export const useNexusStore = create<NexusStore>((set) => ({
         ],
         currentText: "",
         currentToolCalls: [],
+        turnToolCalls: [],
         status: "done",
       };
     }),
