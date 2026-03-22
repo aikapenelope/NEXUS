@@ -57,7 +57,7 @@ export function useAgentStream() {
 
         case "tool_call_start": {
           const tc: ToolCall = {
-            id: event.tool_call_id ?? crypto.randomUUID(),
+            id: event.tool_call_id ?? Math.random().toString(36).slice(2),
             name: event.tool_name ?? "unknown",
             args: "",
             status: "running",
