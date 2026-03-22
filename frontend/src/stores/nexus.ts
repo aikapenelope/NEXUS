@@ -167,23 +167,28 @@ export const useNexusStore = create<NexusStore>((set) => ({
     set({ pendingApprovals: requests, status: "approval" }),
 
   finalizeAssistantMessage: (content) =>
-    set((s) => ({
-      messages: [
-        ...s.messages,
-        {
-          role: "assistant",
-          content: content || s.currentText,
-          toolCalls:
-            s.currentToolCalls.length > 0
-              ? [...s.currentToolCalls]
-              : undefined,
-          timestamp: Date.now(),
-        },
-      ],
-      currentText: "",
-      currentToolCalls: [],
-      status: "done",
-    })),
+    set((s) => {
+      // Preserve tool calls that happened during this turn
+      const toolCalls =
+        s.currentToolCalls.length > 0
+          ? s.currentToolCalls.map((tc) => ({ ...tc, status: "done" as const }))
+          : undefined;
+
+      return {
+        messages: [
+          ...s.messages,
+          {
+            role: "assistant",
+            content: content || s.currentText,
+            toolCalls,
+            timestamp: Date.now(),
+          },
+        ],
+        currentText: "",
+        currentToolCalls: [],
+        status: "done",
+      };
+    }),
 
   reset: () =>
     set({
