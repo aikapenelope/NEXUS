@@ -90,27 +90,9 @@ def setup_observability() -> None:
     # Instrument Pydantic AI — captures agent runs, tool calls, model requests
     logfire.instrument_pydantic_ai()
 
-    # --- Phoenix: AI-specific observability via OpenTelemetry ---
-    phoenix_endpoint = os.environ.get(
-        "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"
-    )
-    try:
-        from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-
-        provider = TracerProvider()
-        # OpenInference enriches spans with AI-specific attributes
-        provider.add_span_processor(OpenInferenceSpanProcessor())
-        # OTLP exporter sends spans to Phoenix
-        provider.add_span_processor(
-            SimpleSpanProcessor(OTLPSpanExporter(endpoint=phoenix_endpoint))
-        )
-        trace.set_tracer_provider(provider)
-    except Exception:
-        pass  # Phoenix is optional
+    # NOTE: Phoenix disabled -- Logfire takes the TracerProvider and blocks
+    # Phoenix from receiving traces. Use Logfire as the single observability
+    # provider. Phoenix container kept running for future OTLP integration.
 
 
 # Fallback: if not running under gunicorn (e.g. uvicorn dev mode),
