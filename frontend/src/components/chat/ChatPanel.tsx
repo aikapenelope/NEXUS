@@ -1,42 +1,206 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useNexusStore } from "@/stores/nexus";
-import { useAgentStream } from "@/hooks/useAgentStream";
+import type { AgentEvent, ToolCall } from "@/stores/nexus";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ApprovalModal } from "./ApprovalModal";
 
+const WS_URL =
+  typeof window !== "undefined"
+    ? `ws://${window.location.hostname}:8000/ws/agent`
+    : "ws://localhost:8000/ws/agent";
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: ToolCall[];
+}
+
+/**
+ * ChatPanel with direct DOM-style state management for WebSocket events.
+ * Uses local React state (useState) instead of zustand for streaming,
+ * avoiding the batching issues that caused tool calls to disappear.
+ */
 export function ChatPanel() {
   const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [streamText, setStreamText] = useState("");
+  const [streamTools, setStreamTools] = useState<ToolCall[]>([]);
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [tokensUsed, setTokensUsed] = useState(0);
+  const [costUsd, setCostUsd] = useState(0);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { send, cancel } = useAgentStream();
-  const messages = useNexusStore((s) => s.messages);
-  const currentText = useNexusStore((s) => s.currentText);
-  const currentToolCalls = useNexusStore((s) => s.currentToolCalls);
-  const status = useNexusStore((s) => s.status);
+  const wsRef = useRef<WebSocket | null>(null);
+  const toolsRef = useRef<ToolCall[]>([]);
+
+  const agent = useNexusStore((s) => s.agent);
   const pendingApprovals = useNexusStore((s) => s.pendingApprovals);
-  const sessionId = useNexusStore((s) => s.sessionId);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, currentText, currentToolCalls]);
+  }, [messages, streamText, streamTools]);
+
+  const handleSend = useCallback(
+    (message: string) => {
+      if (!message.trim() || status === "running") return;
+
+      // Add user message
+      setMessages((prev) => [...prev, { role: "user", content: message }]);
+      setStreamText("");
+      setStreamTools([]);
+      setStatus("running");
+      toolsRef.current = [];
+
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ message, agent, session_id: sessionId }));
+      };
+
+      ws.onmessage = (e: MessageEvent) => {
+        const event: AgentEvent = JSON.parse(e.data as string);
+
+        switch (event.type) {
+          case "session_created":
+            setSessionId(event.session_id ?? null);
+            break;
+
+          case "start":
+            setStatus("running");
+            toolsRef.current = [];
+            break;
+
+          case "text_delta":
+            setStreamText((prev) => prev + (event.content ?? ""));
+            break;
+
+          case "tool_call_start": {
+            const tc: ToolCall = {
+              id: event.tool_call_id ?? crypto.randomUUID(),
+              name: event.tool_name ?? "unknown",
+              args: "",
+              status: "running",
+            };
+            toolsRef.current = [...toolsRef.current, tc];
+            setStreamTools([...toolsRef.current]);
+            break;
+          }
+
+          case "tool_args_delta": {
+            const ref = toolsRef.current;
+            if (ref.length > 0) {
+              const last = ref[ref.length - 1];
+              toolsRef.current = [
+                ...ref.slice(0, -1),
+                { ...last, args: last.args + (event.args_delta ?? "") },
+              ];
+              setStreamTools([...toolsRef.current]);
+            }
+            break;
+          }
+
+          case "tool_start":
+            // Already handled by tool_call_start
+            break;
+
+          case "tool_output": {
+            const name = event.tool_name ?? "unknown";
+            toolsRef.current = toolsRef.current.map((tc) =>
+              tc.name === name
+                ? { ...tc, output: event.output ?? "", status: "done" }
+                : tc,
+            );
+            setStreamTools([...toolsRef.current]);
+            break;
+          }
+
+          case "todos_update":
+            if (event.todos) {
+              useNexusStore.getState().setTodos(event.todos);
+            }
+            break;
+
+          case "approval_required":
+            if (event.requests) {
+              useNexusStore.getState().setPendingApprovals(event.requests);
+            }
+            break;
+
+          case "response": {
+            // Finalize: move streaming content to messages
+            const finalTools = toolsRef.current.map((tc) => ({
+              ...tc,
+              status: "done" as const,
+            }));
+            const content = event.content ?? "";
+
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content,
+                toolCalls: finalTools.length > 0 ? finalTools : undefined,
+              },
+            ]);
+            setStreamText("");
+            setStreamTools([]);
+            setStatus("done");
+            toolsRef.current = [];
+
+            if (event.tokens_used) {
+              setTokensUsed(event.tokens_used);
+              setCostUsd(event.cost_usd ?? 0);
+            }
+            break;
+          }
+
+          case "done":
+            setStatus("done");
+            ws.close();
+            break;
+
+          case "error":
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: `Error: ${event.content ?? "Unknown"}` },
+            ]);
+            setStatus("error");
+            toolsRef.current = [];
+            ws.close();
+            break;
+
+          case "cancelled":
+            setStatus("done");
+            toolsRef.current = [];
+            ws.close();
+            break;
+        }
+      };
+
+      ws.onerror = () => setStatus("error");
+    },
+    [agent, sessionId, status],
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || status === "running") return;
-    send(input.trim());
+    handleSend(input.trim());
     setInput("");
   };
 
-  const isStreaming =
-    status === "running" &&
-    (currentText.length > 0 || currentToolCalls.length > 0);
+  const handleCancel = () => {
+    wsRef.current?.send(JSON.stringify({ cancel: true }));
+  };
 
   return (
     <div className="flex flex-col h-full">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && !isStreaming && (
+        {messages.length === 0 && streamTools.length === 0 && !streamText && (
           <div className="text-center text-zinc-600 mt-20">
             <p className="text-lg font-medium text-zinc-400">NEXUS</p>
             <p className="text-sm mt-1">
@@ -72,15 +236,15 @@ export function ChatPanel() {
         ))}
 
         {/* Streaming content */}
-        {(currentToolCalls.length > 0 || (status === "running" && currentText)) && (
+        {(streamTools.length > 0 || streamText) && (
           <div className="flex justify-start">
             <div className="max-w-[85%] rounded-lg px-4 py-3 text-sm bg-zinc-800/80 text-zinc-200 border border-zinc-700/40">
-              {currentToolCalls.map((tc) => (
+              {streamTools.map((tc) => (
                 <ToolCallBlock key={tc.id} toolCall={tc} />
               ))}
-              {currentText && (
+              {streamText && (
                 <pre className="whitespace-pre-wrap font-sans leading-relaxed">
-                  {currentText}
+                  {streamText}
                 </pre>
               )}
               {status === "running" && (
@@ -90,9 +254,7 @@ export function ChatPanel() {
           </div>
         )}
 
-        {/* Approval modal */}
         {pendingApprovals.length > 0 && <ApprovalModal />}
-
         <div ref={messagesEndRef} />
       </div>
 
@@ -110,7 +272,7 @@ export function ChatPanel() {
           {status === "running" ? (
             <button
               type="button"
-              onClick={cancel}
+              onClick={handleCancel}
               className="px-4 py-2.5 bg-red-900/50 text-red-200 rounded-lg text-sm hover:bg-red-900/70 transition-colors"
             >
               Stop
@@ -125,11 +287,17 @@ export function ChatPanel() {
             </button>
           )}
         </div>
-        {sessionId && (
-          <p className="text-[10px] text-zinc-600 mt-1.5 px-1">
-            session: {sessionId.slice(0, 16)}...
-          </p>
-        )}
+        <div className="flex items-center gap-3 mt-1.5 px-1 text-[10px] text-zinc-600">
+          {sessionId && <span>session: {sessionId.slice(0, 12)}</span>}
+          {tokensUsed > 0 && (
+            <>
+              <span className="text-emerald-600">
+                {tokensUsed.toLocaleString()} tokens
+              </span>
+              <span className="text-emerald-600">${costUsd.toFixed(4)}</span>
+            </>
+          )}
+        </div>
       </form>
     </div>
   );
