@@ -43,6 +43,7 @@ from app.tools.brain_toolset import create_brain_toolset
 from app.tools.github_toolset import create_github_toolset
 from app.tools.graphiti_native import create_graphiti_native_toolset
 from app.tools.langchain_tools import create_langchain_toolset
+from app.tools.lsp_toolset import create_lsp_toolset
 from app.tools.remember_toolset import create_remember_toolset
 
 logger = logging.getLogger(__name__)
@@ -336,6 +337,7 @@ def _build_toolsets() -> list[Any]:
     for factory in [
         create_langchain_toolset,
         create_github_toolset,
+        create_lsp_toolset,  # check_types + check_lint (lightweight, always available)
     ]:
         toolset = factory()
         if toolset is not None:
@@ -430,7 +432,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         # --- Skills ---
         skill_directories=_resolve_skill_dirs(config),
         # --- Custom toolsets (brain + remember + LangChain research tools) ---
-        toolsets=[] if config.light_mode else _build_toolsets(),
+        toolsets=[create_lsp_toolset()] if config.light_mode else _build_toolsets(),
         # --- Hooks (safety + audit) — matches vstorm full_app ---
         hooks=_HOOKS,
         # --- Middleware (audit + permissions + loop detection) ---
