@@ -140,9 +140,18 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to clone repo: {e}") from e
 
-    # Build and run agent
+    # Build and run agent with Git MCP for repo operations
     try:
+        from app.tools.coding_mcps import create_git_mcp_toolset
+
         agent = build_agent(config)
+
+        # Add Git MCP toolset pointing to the cloned workspace
+        extra_toolsets = []
+        git_mcp = create_git_mcp_toolset(repo_dir=str(workspace))
+        if git_mcp is not None:
+            extra_toolsets.append(git_mcp)
+
         from pydantic_ai.usage import UsageLimits
 
         usage_limits = UsageLimits(
