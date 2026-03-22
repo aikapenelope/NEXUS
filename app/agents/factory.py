@@ -400,8 +400,9 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         # Disable web_search approval to prevent DeferredToolRequests from
         # breaking AG-UI streaming.
         interrupt_on["web_search"] = False
-    if config.use_sandbox and config.include_filesystem:
-        interrupt_on["execute"] = True
+    # Execute runs without approval (auto-approve). Safety is enforced
+    # via agent instructions ("don't run destructive commands").
+    interrupt_on["execute"] = False
 
     # Fix 5: include_plan and include_general_purpose_subagent for
     # agents that use subagents (matches vstorm full_app reference).
@@ -419,7 +420,7 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         include_skills=config.include_skills,
         include_memory=config.include_memory,
         include_web=config.include_web,
-        include_execute=config.use_sandbox and config.include_filesystem,
+        include_execute=config.include_filesystem,  # Execute enabled with filesystem
         # --- Fix 6: Plan mode + general-purpose subagent + teams ---
         include_plan=include_plan,
         include_general_purpose_subagent=include_general_purpose,
