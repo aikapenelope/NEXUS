@@ -110,7 +110,7 @@ class SessionManager:
         # LocalBackend gives the agent a real filesystem
         backend = LocalBackend(
             root_dir=workspace_dir,
-            enable_execute=config.use_sandbox,
+            enable_execute=True,  # Always enable execute for persistent sessions
         )
 
         deps = DeepAgentDeps(backend=backend)
