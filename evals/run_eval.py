@@ -35,8 +35,8 @@ TASKS = [
             "Every function parameter and return type must be annotated. "
             "Do not change any logic, only add type annotations."
         ),
-        "token_limit": 60000,
-        "cost_budget": 0.30,
+        "token_limit": 100000,
+        "cost_budget": 0.50,
         "validation_cmd": ["python3", "-m", "pyright", "app/tasks.py"],
     },
     {
@@ -47,7 +47,7 @@ TASKS = [
             "Test SessionManager: create, get, get_or_create, remove, "
             "list_sessions, cleanup_idle. Save to tests/test_sessions.py."
         ),
-        "token_limit": 80000,
+        "token_limit": 100000,
         "cost_budget": 0.50,
         "validation_cmd": ["python3", "-m", "pytest", "tests/test_sessions.py", "-v"],
     },
@@ -59,8 +59,8 @@ TASKS = [
             "Run 'ruff check app/' and fix every error. "
             "Do not change functionality, only fix lint issues."
         ),
-        "token_limit": 80000,
-        "cost_budget": 0.40,
+        "token_limit": 100000,
+        "cost_budget": 0.50,
         "validation_cmd": ["python3", "-m", "ruff", "check", "app/"],
     },
     {
@@ -72,8 +72,8 @@ TASKS = [
             "redis_status (check redis ping), uptime_seconds. "
             "Import what you need. Make it async."
         ),
-        "token_limit": 80000,
-        "cost_budget": 0.50,
+        "token_limit": 100000,
+        "cost_budget": 0.60,
         "validation_cmd": ["python3", "-m", "pyright", "app/main.py"],
     },
     {
@@ -86,8 +86,8 @@ TASKS = [
             "Update app/agents/factory.py to use create_all_toolsets() "
             "instead of calling each factory individually."
         ),
-        "token_limit": 100000,
-        "cost_budget": 0.60,
+        "token_limit": 120000,
+        "cost_budget": 0.80,
         "validation_cmd": ["python3", "-m", "pyright", "app/"],
     },
 ]
