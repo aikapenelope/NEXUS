@@ -142,15 +142,22 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
 
     # Build and run agent with Git MCP for repo operations
     try:
-        from app.tools.coding_mcps import create_git_mcp_toolset
+        from app.tools.coding_mcps import create_code_context_toolset, create_git_mcp_toolset
+        from app.tools.playwright_toolset import create_playwright_toolset
 
         agent = build_agent(config)
 
-        # Add Git MCP toolset pointing to the cloned workspace
+        # Add Git MCP + code-context + Playwright toolsets
         extra_toolsets = []
         git_mcp = create_git_mcp_toolset(repo_dir=str(workspace))
         if git_mcp is not None:
             extra_toolsets.append(git_mcp)
+        code_ctx = create_code_context_toolset()
+        if code_ctx is not None:
+            extra_toolsets.append(code_ctx)
+        playwright = create_playwright_toolset()
+        if playwright is not None:
+            extra_toolsets.append(playwright)
 
         from pydantic_ai.usage import UsageLimits
 
@@ -164,17 +171,35 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
             f"You are working in a git repository cloned at {workspace}. "
             f"The repo was cloned from {request.repo_url} (branch: {request.branch}).\n\n"
             f"Task: {request.task}\n\n"
-            f"After completing the task, make sure all changes are saved to files."
+            f"After completing the task, make sure all changes are saved to files. "
+            f"If you edit Python files, run check_types to verify no type errors."
         )
 
-        result = await agent.run(
-            prompt,
-            deps=session.deps,
-            usage_limits=usage_limits,
-        )
+        # Run with retry on token limit exceeded
+        output = "Task completed."
+        total_tokens = 0
+        last_error = None
 
-        output = str(result.output) if result.output else "Task completed."
-        total_tokens = result.usage().total_tokens if result.usage() else 0
+        for attempt in range(2):
+            try:
+                retry_prompt = prompt if attempt == 0 else (
+                    f"{prompt}\n\n(Retry: be more concise, fewer tool calls.)"
+                )
+                result = await agent.run(
+                    retry_prompt,
+                    deps=session.deps,
+                    usage_limits=usage_limits,
+                )
+                output = str(result.output) if result.output else "Task completed."
+                total_tokens = result.usage().total_tokens if result.usage() else 0
+                last_error = None
+                break
+            except Exception as retry_err:
+                last_error = retry_err
+                logger.warning(f"Task attempt {attempt + 1} failed: {retry_err}")
+
+        if last_error is not None:
+            raise last_error
 
     except Exception as e:
         logger.exception("Code task failed")
