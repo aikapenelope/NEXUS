@@ -7,68 +7,66 @@ const WS_URL =
     ? `ws://${window.location.hostname}:8000/ws/agent`
     : "ws://localhost:8000/ws/agent";
 
+/** Fresh store access -- avoids stale closure issues. */
+const gs = () => useNexusStore.getState();
+
 export function useAgentStream() {
   const wsRef = useRef<WebSocket | null>(null);
 
   const send = useCallback((message: string) => {
-    const state = useNexusStore.getState();
-    state.addUserMessage(message);
+    gs().addUserMessage(message);
 
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      const s = useNexusStore.getState();
       ws.send(
         JSON.stringify({
           message,
-          agent: s.agent,
-          session_id: s.sessionId,
+          agent: gs().agent,
+          session_id: gs().sessionId,
         }),
       );
     };
 
     ws.onmessage = (e: MessageEvent) => {
       const event: AgentEvent = JSON.parse(e.data as string);
-      const s = useNexusStore.getState();
 
       switch (event.type) {
         case "session_created":
-          s.setSessionId(event.session_id ?? null);
+          gs().setSessionId(event.session_id ?? null);
           break;
         case "start":
-          s.setStatus("running");
+          gs().setStatus("running");
           break;
         case "text_delta":
-          s.appendTextDelta(event.content ?? "");
+          gs().appendTextDelta(event.content ?? "");
           break;
         case "tool_call_start":
-          s.addToolCall(
+          gs().addToolCall(
             event.tool_call_id ?? crypto.randomUUID(),
             event.tool_name ?? "unknown",
           );
           break;
         case "tool_args_delta":
-          s.appendToolArgs(event.args_delta ?? "");
+          gs().appendToolArgs(event.args_delta ?? "");
           break;
         case "tool_start":
-          // tool_start fires AFTER tool_call_start for the same tool.
-          // Don't create a duplicate -- just update args if needed.
           break;
         case "tool_output":
-          s.setToolOutput(
+          gs().setToolOutput(
             event.tool_name ?? "unknown",
             event.output ?? "",
           );
           break;
         case "todos_update":
-          if (event.todos) s.setTodos(event.todos);
+          if (event.todos) gs().setTodos(event.todos);
           break;
         case "approval_required":
-          if (event.requests) s.setPendingApprovals(event.requests);
+          if (event.requests) gs().setPendingApprovals(event.requests);
           break;
         case "response":
-          s.finalizeAssistantMessage(event.content ?? "");
+          gs().finalizeAssistantMessage(event.content ?? "");
           if (event.tokens_used) {
             useNexusStore.setState({
               tokensUsed: event.tokens_used,
@@ -77,25 +75,25 @@ export function useAgentStream() {
           }
           break;
         case "done":
-          s.setStatus("done");
+          gs().setStatus("done");
           ws.close();
           break;
         case "error":
-          s.finalizeAssistantMessage(
+          gs().finalizeAssistantMessage(
             `Error: ${event.content ?? "Unknown error"}`,
           );
-          s.setStatus("error");
+          gs().setStatus("error");
           ws.close();
           break;
         case "cancelled":
-          s.setStatus("done");
+          gs().setStatus("done");
           ws.close();
           break;
       }
     };
 
     ws.onerror = () => {
-      useNexusStore.getState().setStatus("error");
+      gs().setStatus("error");
     };
   }, []);
 
@@ -103,7 +101,7 @@ export function useAgentStream() {
     wsRef.current?.send(
       JSON.stringify({ approval: { [toolCallId]: approved } }),
     );
-    useNexusStore.getState().setStatus("running");
+    gs().setStatus("running");
   }, []);
 
   const cancel = useCallback(() => {
