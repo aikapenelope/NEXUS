@@ -71,17 +71,19 @@ export function ChatPanel() {
           </div>
         ))}
 
+        {/* Debug: show raw state */}
+        <div className="text-[9px] text-zinc-600 bg-zinc-900 rounded p-2 font-mono">
+          status={status} | toolCalls={currentToolCalls.length} | text={currentText.length}chars
+          | msgs={messages.length} | lastMsg.tools={messages[messages.length-1]?.toolCalls?.length ?? 0}
+        </div>
+
         {/* Streaming content */}
-        {(status === "running" || currentToolCalls.length > 0) && (
+        {(currentToolCalls.length > 0 || (status === "running" && currentText)) && (
           <div className="flex justify-start">
             <div className="max-w-[85%] rounded-lg px-4 py-3 text-sm bg-zinc-800/80 text-zinc-200 border border-zinc-700/40">
-              {currentToolCalls.length > 0 && (
-                <div className="mb-2">
-                  {currentToolCalls.map((tc) => (
-                    <ToolCallBlock key={tc.id} toolCall={tc} />
-                  ))}
-                </div>
-              )}
+              {currentToolCalls.map((tc) => (
+                <ToolCallBlock key={tc.id} toolCall={tc} />
+              ))}
               {currentText && (
                 <pre className="whitespace-pre-wrap font-sans leading-relaxed">
                   {currentText}
