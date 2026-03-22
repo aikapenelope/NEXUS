@@ -107,6 +107,7 @@ interface NexusStore {
   setTodos: (todos: TodoItem[]) => void;
   setPendingApprovals: (requests: ApprovalRequest[]) => void;
   finalizeAssistantMessage: (content: string) => void;
+  finalizeWithToolCalls: (content: string, toolCalls?: ToolCall[]) => void;
   reset: () => void;
   setSessions: (sessions: SessionInfo[]) => void;
 }
@@ -180,28 +181,34 @@ export const useNexusStore = create<NexusStore>((set) => ({
     set({ pendingApprovals: requests, status: "approval" }),
 
   finalizeAssistantMessage: (content) =>
-    set((s) => {
-      const toolCalls =
-        s.turnToolCalls.length > 0
-          ? s.turnToolCalls.map((tc) => ({ ...tc, status: "done" as const }))
-          : undefined;
+    set((s) => ({
+      messages: [
+        ...s.messages,
+        { role: "assistant", content: content || s.currentText, timestamp: Date.now() },
+      ],
+      currentText: "",
+      currentToolCalls: [],
+      turnToolCalls: [],
+      status: "done",
+    })),
 
-      return {
-        messages: [
-          ...s.messages,
-          {
-            role: "assistant",
-            content: content || s.currentText,
-            toolCalls,
-            timestamp: Date.now(),
-          },
-        ],
-        currentText: "",
-        currentToolCalls: [],
-        turnToolCalls: [],
-        status: "done",
-      };
-    }),
+  // Called from hook with tool calls from ref (survives React batching)
+  finalizeWithToolCalls: (content: string, toolCalls?: ToolCall[]) =>
+    set((s) => ({
+      messages: [
+        ...s.messages,
+        {
+          role: "assistant",
+          content: content || s.currentText,
+          toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+          timestamp: Date.now(),
+        },
+      ],
+      currentText: "",
+      currentToolCalls: [],
+      turnToolCalls: [],
+      status: "done",
+    })),
 
   reset: () =>
     set({
