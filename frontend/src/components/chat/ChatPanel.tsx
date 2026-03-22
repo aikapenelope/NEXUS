@@ -71,12 +71,6 @@ export function ChatPanel() {
           </div>
         ))}
 
-        {/* Debug: show raw state */}
-        <div className="text-[9px] text-zinc-600 bg-zinc-900 rounded p-2 font-mono">
-          status={status} | toolCalls={currentToolCalls.length} | text={currentText.length}chars
-          | msgs={messages.length} | lastMsg.tools={messages[messages.length-1]?.toolCalls?.length ?? 0}
-        </div>
-
         {/* Streaming content */}
         {(currentToolCalls.length > 0 || (status === "running" && currentText)) && (
           <div className="flex justify-start">
