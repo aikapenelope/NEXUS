@@ -87,6 +87,7 @@ export function ChatPanel() {
             };
             toolsRef.current = [...toolsRef.current, tc];
             setStreamTools([...toolsRef.current]);
+            console.log("[NEXUS] tool_call_start", tc.name, "ref:", toolsRef.current.length);
             break;
           }
 
@@ -137,6 +138,8 @@ export function ChatPanel() {
               status: "done" as const,
             }));
             const content = event.content ?? "";
+
+            console.log("[NEXUS] response, toolsRef:", toolsRef.current.length, "finalTools:", finalTools.length);
 
             setMessages((prev) => [
               ...prev,
