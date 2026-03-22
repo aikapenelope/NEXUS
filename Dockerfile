@@ -31,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Install LSP tools (pyright, ruff) for agent type checking and linting
+RUN pip install --no-cache-dir pyright ruff
+
 # Copy gunicorn config and application code
 COPY gunicorn.conf.py .
 COPY app/ ./app/

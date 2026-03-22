@@ -41,7 +41,6 @@ def create_lsp_toolset(
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd="/workspace",
             )
             output = result.stdout + result.stderr
             if result.returncode == 0:
@@ -73,7 +72,6 @@ def create_lsp_toolset(
                 capture_output=True,
                 text=True,
                 timeout=15,
-                cwd="/workspace",
             )
             output = result.stdout + result.stderr
             if result.returncode == 0:
