@@ -61,6 +61,36 @@ def _clone_repo(repo_url: str, target_dir: Path, branch: str) -> None:
         raise RuntimeError(f"git clone failed: {result.stderr}")
 
 
+def _get_repo_summary(workspace: Path) -> str:
+    """Generate a quick repo summary: top-level structure + key files.
+
+    Gives the agent context about the repo without reading every file.
+    Keeps it under 500 chars to minimize token usage.
+    """
+    try:
+        items = sorted(workspace.iterdir())
+        dirs = [f.name + "/" for f in items if f.is_dir() and not f.name.startswith(".")]
+        files = [f.name for f in items if f.is_file() and not f.name.startswith(".")]
+
+        summary_parts = ["Repo structure:"]
+        if dirs:
+            summary_parts.append(f"  Dirs: {', '.join(dirs[:15])}")
+        if files:
+            summary_parts.append(f"  Files: {', '.join(files[:15])}")
+
+        # Check for key config files
+        for key_file in ["README.md", "pyproject.toml", "package.json", "Cargo.toml", "go.mod"]:
+            path = workspace / key_file
+            if path.exists():
+                content = path.read_text()[:200]
+                summary_parts.append(f"  {key_file} (first 200 chars): {content}")
+                break
+
+        return "\n".join(summary_parts)[:800]
+    except Exception:
+        return ""
+
+
 def _get_diff(workspace: Path) -> tuple[str, list[str]]:
     """Get git diff (tracked + untracked) and list of changed files."""
     # Stage all changes including new files
@@ -141,6 +171,9 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to clone repo: {e}") from e
 
+    # Auto-index: generate a quick repo summary for context
+    repo_summary = _get_repo_summary(workspace)
+
     # Build and run agent with Git MCP for repo operations
     try:
         from app.tools.coding_mcps import create_code_context_toolset, create_git_mcp_toolset
@@ -171,6 +204,9 @@ async def run_code_task(request: CodeTaskRequest) -> CodeTaskResponse:
         prompt = (
             f"You are working in a git repository cloned at {workspace}. "
             f"The repo was cloned from {request.repo_url} (branch: {request.branch}).\n\n"
+            f"{repo_summary}\n\n"
+            f"IMPORTANT: Do NOT explore or read files unless the task requires it. "
+            f"Act directly on the task. Minimize tool calls.\n\n"
             f"Task: {request.task}\n\n"
             f"After completing the task, make sure all changes are saved to files. "
             f"If you edit Python files, run check_types to verify no type errors."

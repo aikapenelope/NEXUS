@@ -258,6 +258,28 @@ def _resolve_token_limit(config: AgentConfig) -> int:
     return settings.worker_token_limit
 
 
+def _get_model_settings(config: AgentConfig) -> dict[str, Any] | None:
+    """Get model settings with Anthropic prompt caching if applicable.
+
+    Caches system instructions and tool definitions to reduce token cost
+    by ~90% on repeated requests (Anthropic's prompt caching feature).
+    Only applies to Anthropic models (Haiku, Sonnet, Opus).
+    """
+    model = get_model_for_role(config.role)
+    if "anthropic" not in model and "claude" not in model:
+        return None
+
+    try:
+        from pydantic_ai.models.anthropic import AnthropicModelSettings
+
+        return AnthropicModelSettings(
+            anthropic_cache_instructions=True,
+            anthropic_cache_tool_definitions=True,
+        )  # type: ignore[return-value]
+    except ImportError:
+        return None
+
+
 def _resolve_cost_budget(config: AgentConfig) -> float:
     """Resolve cost budget: explicit config > role-based default."""
     if config.cost_budget_usd is not None:
@@ -415,6 +437,8 @@ def build_agent(config: AgentConfig) -> Agent[DeepAgentDeps, str]:
         model=model,
         instructions=_build_instructions(config),
         backend=None,  # Backend comes from deps at runtime
+        # --- Anthropic prompt caching (reduces ~90% of system prompt cost) ---
+        model_settings=_get_model_settings(config),
         # --- Toolsets ---
         include_todo=config.include_todo,
         include_filesystem=config.include_filesystem,
