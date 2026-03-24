@@ -40,6 +40,7 @@ class Session:
     session_id: str
     config: AgentConfig
     deps: DeepAgentDeps
+    user_id: str = "default"
     message_history: list[ModelMessage] = field(default_factory=list)
     pending_approval: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
@@ -142,17 +143,21 @@ class SessionManager:
             return True
         return False
 
-    def list_sessions(self) -> list[dict[str, Any]]:
-        """List all active sessions."""
+    def list_sessions(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List active sessions, optionally filtered by user."""
+        sessions = self._sessions.values()
+        if user_id:
+            sessions = [s for s in sessions if s.user_id == user_id]
         return [
             {
                 "session_id": s.session_id,
                 "agent": s.config.name,
+                "user_id": s.user_id,
                 "messages": len(s.message_history),
                 "created_at": s.created_at,
                 "last_active": s.last_active,
             }
-            for s in self._sessions.values()
+            for s in sessions
         ]
 
     def cleanup_idle(self, max_idle_seconds: int = 3600) -> int:
